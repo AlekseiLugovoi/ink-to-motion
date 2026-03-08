@@ -1,0 +1,79 @@
+{
+  "image": "OUTPUT/img03_clean.png",
+  "skeleton": {
+    "points": [
+      "head",
+      "neck",
+      "left_hand",
+      "right_hand",
+      "hip",
+      "left_foot",
+      "right_foot",
+      "tail"
+    ],
+    "bones": [
+      [
+        0,
+        1
+      ],
+      [
+        1,
+        2
+      ],
+      [
+        1,
+        3
+      ],
+      [
+        1,
+        4
+      ],
+      [
+        4,
+        5
+      ],
+      [
+        4,
+        6
+      ],
+      [
+        4,
+        7
+      ]
+    ]
+  },
+  "keypoints": {
+    "head": [
+      434,
+      360
+    ],
+    "neck": [
+      437,
+      666
+    ],
+    "left_hand": [
+      316,
+      838
+    ],
+    "right_hand": [
+      547,
+      857
+    ],
+    "hip": [
+      454,
+      962
+    ],
+    "left_foot": [
+      314,
+      1079
+    ],
+    "right_foot": [
+      648,
+      1099
+    ],
+    "tail": [
+      1038,
+      419
+    ]
+  }
+}
