@@ -7,16 +7,34 @@
 <details>
 <summary>2026-03-18</summary>
 
-- [ ] 5шт разных примеров для флоу B
-- [ ] ...
+- [x] Новый шаблон
+- [x] Новые целевые персонажи
+- [x] Попытка анимации (скелет + триангуляция)
+- [x] MVP сервиса через UI (gradio)
+- [ ] Поднять сервис на Railway
+
+
+### Заметки (поштормили)
+
+- предпосылки:
+    - есть один заранее известный (полностью детерменированный) персонаж
+        - заранее хорошо прорисован в нормальной позе
+        - наложен скелет (?)
+        - понятная анимация (раскадровка или все-таки этот скелет как-то двигать)
+- приземлить вырезание персонажа (как?)
+- квадратики мб показывают еще и направление
+- прототип ручной отрисовки ок, но не для масштабирования
+- ок если генерация создается только один раз (не каждый раз при запросе анимации)
+- мэш 3д - разметить скелет (руками)
 
 </details>
 
 <details>
 <summary>2026-03-14</summary>
 
-- [x] причесать гит: Общий пайплайн, примеры, TODO
+- [x] Причесать гит: Общий пайплайн, примеры, TODO
 - [ ] 10-20шт примеров (для флоу B)
+- [ ] Пример раскадровки
 - [x] 🆕 Выравнивание по ArUco-маркерам шаблон
 - [x] 🆕 Примеры выравнивания
 - [x] 🆕 Проработка флоу A: четкое наложение красок
@@ -37,7 +55,7 @@
 
 | Пустой | С персонажем |
 |---|---|
-| <img src="preprocessing/output/blank_template.png" width="300"> | <img src="preprocessing/output/img01_raw_template.png" width="300"> |
+| <img src="preprocessing/output/template.png" width="300"> | <img src="preprocessing/output/img01_template.png" width="300"> |
 
 ### 1. Выравнивание
 
@@ -93,11 +111,11 @@
 - [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) — x4 апскейл, хорошо работает на рисунках/аниме
 - [SwinIR](https://github.com/JingyunLiang/SwinIR) — transformer-based super resolution
 
-**Пример апскейла** (Real-ESRGAN x4, реализация в [`preprocess.ipynb`](preprocess.ipynb)):
+**Пример апскейла** (Real-ESRGAN x4, реализация в [`preprocess.ipynb`](rnd/preprocess.ipynb)):
 
 | До (483x511) | После (1932x2044) |
 |---|---|
-| <img src="OUTPUT/img04_clean.png" width="200"> | <img src="OUTPUT/img04_upscaled.png" width="200"> |
+| <img src="rnd/output/img04_clean.png" width="200"> | <img src="rnd/output/img04_upscaled.png" width="200"> |
 
 **Стилизация** — из наброска в "продакшн" картинку (img2img):
 - [ControlNet](https://github.com/lllyasviel/ControlNet) + SD — линии/скетч как контроль, стиль через промпт
@@ -111,11 +129,11 @@
 - [IP-Adapter](https://github.com/tencent-ailab/IP-Adapter) + ControlNet openpose — сохраняем внешность персонажа, задаём целевую позу скелетом
 - [CharacterGen](https://github.com/zjp-shadow/CharacterGen) — генерация character sheet (фронт, бок, спина) из одного ракурса
 
-**Пример нормализации позы** (реализация в [`normalize_pose.ipynb`](normalize_pose.ipynb)):
+**Пример нормализации позы** (реализация в [`normalize_pose.ipynb`](rnd/normalize_pose.ipynb)):
 
 | Оригинал | Qwen-Image-Edit (локально) | Gemini 3.1 Flash (OpenRouter) |
 |---|---|---|
-| <img src="OUTPUT/img04_clean.png" width="150"> | <img src="OUTPUT/img04_tpose_qwen.png" width="150"> | <img src="OUTPUT/img04_tpose_gemini.png" width="150"> |
+| <img src="rnd/output/img04_clean.png" width="150"> | <img src="rnd/output/img04_tpose_qwen.png" width="150"> | <img src="rnd/output/img04_tpose_gemini.png" width="150"> |
 
 ### 4. Pose Estimation (опционально)
 
@@ -133,11 +151,11 @@
 
 **Вручную** — пользователь сам размечает ключевые точки скелета по шаблону.
 
-**Пример ручной разметки** (реализация в [`pose.ipynb`](pose.ipynb)):
+**Пример ручной разметки** (реализация в [`pose.ipynb`](rnd/pose.ipynb)):
 
 | Персонаж | Скелет |
 |---|---|
-| <img src="OUTPUT/img03_clean.png" width="200"> | <img src="OUTPUT/img03_pose.png" width="200"> |
+| <img src="rnd/output/img03_clean.png" width="200"> | <img src="rnd/output/img03_pose.png" width="200"> |
 
 ### 5. Оживление
 
@@ -150,13 +168,26 @@
 - Требует pose estimation (шаг 4)
 - Движения из mocap баз: [CMU MoCap](http://mocap.cs.cmu.edu/), [Mixamo](https://www.mixamo.com/)
 
-**Пример** (реализация в [`animate_bone.ipynb`](animate_bone.ipynb)):
+**Пример** (реализация в [`animate_bone.ipynb`](rnd/animate_bone.ipynb)):
 
 | Stick-figure (работает) | Заливка (артефакты) |
 |---|---|
-| <img src="OUTPUT/img01_animated.gif" width="200"> | <img src="OUTPUT/img03_animated.gif" width="200"> |
+| <img src="rnd/output/img01_animated.gif" width="200"> | <img src="rnd/output/img03_animated.gif" width="200"> |
 
-#### 5.2 Image-to-Video
+#### 5.2 Mesh-деформация (без AI)
+
+> Деформируем картинку целиком по скелету: Delaunay-триангуляция по ключевым точкам → движение точек по паттерну (синусоида) → per-triangle affine warp. Работает на CPU, без нейросетей.
+
+- Требует pose estimation (шаг 4)
+- Паттерны движения задаются вручную (качание хвоста, плавников и т.д.)
+
+**Пример** (реализация в [`prepare_template.ipynb`](preprocessing/prepare_template.ipynb)):
+
+| Персонаж | Скелет | Триангуляция | Анимация |
+|---|---|---|---|
+| <img src="preprocessing/input/img05.png" width="200"> | <img src="preprocessing/output/img05_skeleton.png" width="200"> | <img src="preprocessing/output/img05_triangulation.png" width="200"> | <img src="preprocessing/output/img05_anim.gif" width="200"> |
+
+#### 5.3 Image-to-Video
 
 > Генеративная модель оживляет рисунок целиком — самый универсальный подход, работает на любых персонажах.
 
@@ -170,14 +201,14 @@
 - [CogVideoX](https://github.com/THUDM/CogVideo) — i2v от Tsinghua
 - [Stable Video Diffusion](https://github.com/Stability-AI/generative-models) — i2v от Stability AI
 
-**Пример** (реализация в [`i2v.ipynb`](i2v.ipynb)):
+**Пример** (реализация в [`i2v.ipynb`](rnd/i2v.ipynb)):
 
 | Оригинал | Wan 2.1 VACE 1.3B (локально) | Kling v2.5 Turbo Pro (fal.ai) |
 |---|---|---|
-| <img src="OUTPUT/img03_clean.png" width="200"> | <img src="OUTPUT/img03_i2v.gif" width="200"> | <img src="OUTPUT/img03_i2v_kling.gif" width="200"> |
-| | [mp4](OUTPUT/img03_i2v.mp4) | [mp4](OUTPUT/img03_i2v_kling.mp4) |
+| <img src="rnd/output/img03_clean.png" width="200"> | <img src="rnd/output/img03_i2v.gif" width="200"> | <img src="rnd/output/img03_i2v_kling.gif" width="200"> |
+| | [mp4](rnd/output/img03_i2v.mp4) | [mp4](rnd/output/img03_i2v_kling.mp4) |
 
-#### 5.3 Image-to-3D
+#### 5.4 Image-to-3D
 
 > Перевод рисунка в 3D-модель — можно крутить, анимировать в движке, использовать в играх.
 
@@ -185,13 +216,13 @@
 - [Hunyuan3D 2.1](https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1) — Tencent, PBR текстуры, 10-29GB VRAM
 - [Trellis-2](https://github.com/Microsoft/TRELLIS) — Microsoft, лучшее качество, 16GB+ VRAM
 
-**Пример** (реализация в [`i2mesh.ipynb`](i2mesh.ipynb)).
+**Пример** (реализация в [`i2mesh.ipynb`](rnd/i2mesh.ipynb)).
 Для раскраски меша по оригинальному рисунку можно использовать Hunyuan3D-Paint (21GB+ VRAM).
 
 | Hunyuan3D-2 shape only (локально) | Trellis (fal.ai) |
 |---|---|
-| <img src="OUTPUT/img03_mesh.gif" width="200"> | <img src="OUTPUT/img03_mesh_trellis.gif" width="200"> |
-| [glb](OUTPUT/img03_mesh.glb) | [glb](OUTPUT/img03_mesh_trellis.glb) |
+| <img src="rnd/output/img03_mesh.gif" width="200"> | <img src="rnd/output/img03_mesh_trellis.gif" width="200"> |
+| [glb](rnd/output/img03_mesh.glb) | [glb](rnd/output/img03_mesh_trellis.glb) |
 
 ## Инфраструктура
 
