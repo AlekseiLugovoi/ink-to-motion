@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 import gradio as gr
 from PIL import Image
-from rembg import remove
+# rembg imported lazily in crop() to avoid slow model download at startup
 from scipy.spatial import Delaunay
 
 ARUCO_DICT = cv2.aruco.DICT_4X4_50
@@ -102,6 +102,7 @@ def crop(image):
     cropped = img[y : y + h, x : x + w]
 
     crop_pil = Image.fromarray(cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB))
+    from rembg import remove
     return remove(crop_pil)
 
 
@@ -470,7 +471,7 @@ def do_composite(cached_frames):
 
 css = ".gradio-container { max-width: 640px !important; margin: auto !important; }"
 
-with gr.Blocks(title="Ink-to-Motion", theme=gr.themes.Soft(primary_hue="orange"), css=css) as demo:
+with gr.Blocks(title="Ink-to-Motion") as demo:
     gr.Markdown("# Ink-to-Motion")
 
     with gr.Accordion("Шаг 1. Скачай шаблон", open=True):
@@ -520,4 +521,5 @@ with gr.Blocks(title="Ink-to-Motion", theme=gr.themes.Soft(primary_hue="orange")
         composite_file = gr.File(label="Скачать HTML")
         composite_btn.click(fn=do_composite, inputs=frames_state, outputs=[composite_out, composite_file])
 
-demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 7860)))
+demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 7860)),
+            theme=gr.themes.Soft(primary_hue="orange"), css=css)
