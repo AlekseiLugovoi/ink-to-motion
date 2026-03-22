@@ -1,6 +1,6 @@
 # ink-to-motion
 
-Рисунок на бумаге → оцифровка → анимация
+Рисунок на бумаге → оцифровка → анимация \
 DEMO: https://ink-to-motion-production.up.railway.app
 
 **TODO:**
