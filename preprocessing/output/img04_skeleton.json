@@ -1,0 +1,74 @@
+{
+  "image": "input/img04.png",
+  "image_size": [
+    842,
+    595
+  ],
+  "skeleton": {
+    "points": [
+      "nose",
+      "center",
+      "tail_base",
+      "tail_tip1",
+      "tail_tip2",
+      "top_fin",
+      "bottom_fin"
+    ],
+    "bones": [
+      [
+        0,
+        1
+      ],
+      [
+        1,
+        2
+      ],
+      [
+        2,
+        3
+      ],
+      [
+        2,
+        4
+      ],
+      [
+        1,
+        5
+      ],
+      [
+        1,
+        6
+      ]
+    ]
+  },
+  "keypoints": {
+    "nose": [
+      0.0974,
+      0.7076
+    ],
+    "center": [
+      0.6461,
+      0.6084
+    ],
+    "tail_base": [
+      0.7803,
+      0.3412
+    ],
+    "tail_tip1": [
+      0.671,
+      0.1193
+    ],
+    "tail_tip2": [
+      0.9299,
+      0.1563
+    ],
+    "top_fin": [
+      0.5226,
+      0.205
+    ],
+    "bottom_fin": [
+      0.5689,
+      0.879
+    ]
+  }
+}

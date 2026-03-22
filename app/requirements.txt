@@ -1,3 +1,6 @@
 gradio
-rembg
+rembg[cpu]
 pillow
+opencv-python-headless
+numpy
+scipy

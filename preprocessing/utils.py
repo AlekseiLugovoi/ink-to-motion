@@ -327,7 +327,7 @@ def extract_colored(aligned_img, meta=None, white_thresh=230):
     return {"rgba": rgba, "crop": crop, "mask": mask}
 
 
-def transfer_color(aligned_img, original_path, image_rect, line_thresh=128, sat_thresh=40):
+def transfer_color(aligned_img, original_path, image_rect, line_thresh=100, sat_thresh=15):
     """Transfer colors from aligned photo onto the original digital drawing.
 
     image_rect: [x, y, w, h] — position of the character on the template
@@ -343,25 +343,33 @@ def transfer_color(aligned_img, original_path, image_rect, line_thresh=128, sat_
     original = cv2.resize(original, (iw, ih), interpolation=cv2.INTER_AREA)
 
     if original.shape[2] == 4:
-        original_bgr = original[:, :, :3]
+        alpha_ch = original[:, :, 3:4] / 255.0
+        original_bgr = (original[:, :, :3] * alpha_ch + 255 * (1 - alpha_ch)).astype(np.uint8)
+        orig_alpha = original[:, :, 3]
     else:
         original_bgr = original
+        orig_alpha = None
 
     result = original_bgr.copy()
 
     original_gray = cv2.cvtColor(original_bgr, cv2.COLOR_BGR2GRAY)
     is_line = (original_gray < line_thresh).astype(np.uint8)
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     is_line_dilated = cv2.dilate(is_line, kernel).astype(bool)
     is_fill = ~is_line_dilated
 
     photo_hsv = cv2.cvtColor(photo_crop, cv2.COLOR_BGR2HSV)
     is_colored = photo_hsv[:, :, 1] > sat_thresh
 
-    result[is_fill & is_colored] = photo_crop[is_fill & is_colored]
+    mask = is_fill & is_colored
+    result[mask] = photo_crop[mask]
 
-    result_gray = cv2.cvtColor(result, cv2.COLOR_BGR2GRAY)
-    alpha = (result_gray < 230).astype(np.uint8) * 255
+    if orig_alpha is not None:
+        alpha = orig_alpha.copy()
+        alpha[mask] = 255
+    else:
+        result_gray = cv2.cvtColor(result, cv2.COLOR_BGR2GRAY)
+        alpha = (result_gray < 230).astype(np.uint8) * 255
 
     b, g, r = cv2.split(result)
     rgba = cv2.merge([b, g, r, alpha])
