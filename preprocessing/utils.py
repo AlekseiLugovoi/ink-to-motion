@@ -327,7 +327,7 @@ def extract_colored(aligned_img, meta=None, white_thresh=230):
     return {"rgba": rgba, "crop": crop, "mask": mask}
 
 
-def transfer_color(aligned_img, original_path, image_rect, line_thresh=100, sat_thresh=15):
+def transfer_color(aligned_img, original_path, image_rect, line_thresh=128, sat_thresh=40):
     """Transfer colors from aligned photo onto the original digital drawing.
 
     image_rect: [x, y, w, h] — position of the character on the template
@@ -354,7 +354,7 @@ def transfer_color(aligned_img, original_path, image_rect, line_thresh=100, sat_
 
     original_gray = cv2.cvtColor(original_bgr, cv2.COLOR_BGR2GRAY)
     is_line = (original_gray < line_thresh).astype(np.uint8)
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
     is_line_dilated = cv2.dilate(is_line, kernel).astype(bool)
     is_fill = ~is_line_dilated
 

@@ -149,13 +149,13 @@ def transfer_color_app(aligned_pil, char_config):
 
     result = original_bgr.copy()
     original_gray = cv2.cvtColor(original_bgr, cv2.COLOR_BGR2GRAY)
-    is_line = (original_gray < 100).astype(np.uint8)
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    is_line = (original_gray < 128).astype(np.uint8)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
     is_line_dilated = cv2.dilate(is_line, kernel).astype(bool)
     is_fill = ~is_line_dilated
 
     photo_hsv = cv2.cvtColor(photo_crop, cv2.COLOR_BGR2HSV)
-    is_colored = photo_hsv[:, :, 1] > 15
+    is_colored = photo_hsv[:, :, 1] > 40
 
     mask = is_fill & is_colored
     result[mask] = photo_crop[mask]
