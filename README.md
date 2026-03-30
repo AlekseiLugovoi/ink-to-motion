@@ -8,6 +8,9 @@ DEMO: https://ink-to-motion-production.up.railway.app
 <details>
 <summary>2026-03-22</summary>
 
+- [x] Сделать нормальный перенос цветов
+    - Маска на внутреннюю часть шаблона?
+- [ ] Сделать больше персонажей
 
 </details>
 
