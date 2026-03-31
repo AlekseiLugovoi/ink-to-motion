@@ -17,15 +17,15 @@ MARKER_PX, MARGIN, CONTENT_PAD = 80, 60, 10
 CONTENT_SCALE = 0.8
 
 TEMPLATES = {
-    "Пустой лист": "assets/template.png",
+    "Шаблон": "assets/template.png",
     "Персонаж 001": "assets/img04_template.png",
 }
 
 ANIM_CHARS = {
     "Персонаж 001": {
-        "drawing": "../preprocessing/templates/001/img.png",
-        "mask": "../preprocessing/templates/001/mask.png",
-        "skeleton": "../preprocessing/templates/001/skeleton.json",
+        "drawing": "assets/templates/001/img.png",
+        "mask": "assets/templates/001/mask.png",
+        "skeleton": "assets/templates/001/skeleton.json",
         "example_gif": "assets/img04_anim.gif",
         "wave_flip": "ltr",
     },
@@ -51,6 +51,25 @@ def decode_camera_photo(b64_str):
 def on_select(name):
     path = TEMPLATES[name]
     return path, path, path
+
+
+_aruco_detector = cv2.aruco.ArucoDetector(cv2.aruco.getPredefinedDictionary(ARUCO_DICT))
+
+def detect_aruco(frame_b64):
+    if not frame_b64 or "," not in frame_b64:
+        return "0"
+    try:
+        _, data = frame_b64.split(",", 1)
+        img_arr = np.frombuffer(base64.b64decode(data), np.uint8)
+        img = cv2.imdecode(img_arr, cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            return "0"
+        _, ids, _ = _aruco_detector.detectMarkers(img)
+        if ids is None:
+            return "0"
+        return str(len(set(ids.flatten().tolist()) & {0, 1, 2, 3}))
+    except Exception:
+        return "0"
 
 
 # ---------------------------------------------------------------------------
@@ -533,6 +552,9 @@ async (dummy) => {
 """
 
 CAMERA_HEAD = """
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <script>
 (function() {
   function getTextboxNode(elemId) {
@@ -544,12 +566,22 @@ CAMERA_HEAD = """
   function setTextboxValue(elemId, value) {
     var node = getTextboxNode(elemId);
     if (!node) return false;
-    var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
-    if (!setter || !setter.set) {
+    var setter = null;
+    if (node instanceof HTMLTextAreaElement) {
       setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
+    } else {
+      setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
     }
     if (!setter || !setter.set) return false;
-    setter.set.call(node, value);
+    try {
+      setter.set.call(node, value);
+    } catch (err) {
+      try {
+        node.value = value;
+      } catch (e) {
+        return false;
+      }
+    }
     node.dispatchEvent(new Event('input', { bubbles: true }));
     node.dispatchEvent(new Event('change', { bubbles: true }));
     return true;
@@ -562,8 +594,8 @@ CAMERA_HEAD = """
 
   function normalizeTemplateUrl(path) {
     if (!path) return '';
-    if (/^(https?:|data:|blob:|\/)/i.test(path)) return path;
-    return '/gradio_api/file=' + path.replace(/^\.?\//, '');
+    if (/^(https?:|data:|blob:|[/])/i.test(path)) return path;
+    return '/gradio_api/file=' + path.replace(/^[.]*[/]/, '');
   }
 
   async function getCameraStream(isMobile) {
@@ -615,7 +647,8 @@ CAMERA_HEAD = """
     throw lastErr || new Error('Camera stream unavailable');
   }
 
-  function openNativeCameraAndLoad(statusEl) {
+  function openNativeCameraAndLoad(widget, statusEl) {
+    var targetId = widget.dataset.target || 'camera-data';
     return new Promise(function(resolve) {
       var input = document.createElement('input');
       input.type = 'file';
@@ -626,23 +659,14 @@ CAMERA_HEAD = """
 
       input.onchange = function(e) {
         var file = e.target.files && e.target.files[0];
-        if (!file) {
-          document.body.removeChild(input);
-          resolve(false);
-          return;
-        }
+        if (!file) { document.body.removeChild(input); resolve(false); return; }
         var reader = new FileReader();
         reader.onload = function(ev) {
-          var ok = setTextboxValue('camera-data', ev.target.result);
-          if (!ok && statusEl) statusEl.textContent = 'Native camera opened, but image could not be sent.';
+          var ok = setTextboxValue(targetId, ev.target.result);
           document.body.removeChild(input);
           resolve(ok);
         };
-        reader.onerror = function() {
-          if (statusEl) statusEl.textContent = 'Could not read image from native camera.';
-          document.body.removeChild(input);
-          resolve(false);
-        };
+        reader.onerror = function() { document.body.removeChild(input); resolve(false); };
         reader.readAsDataURL(file);
       };
 
@@ -680,7 +704,9 @@ CAMERA_HEAD = """
   }
 
   function stopCamera(widget) {
-    if (!widget || !widget._cameraStream) return;
+    if (!widget) return;
+    stopDetection(widget);
+    if (!widget._cameraStream) return;
     widget._cameraStream.getTracks().forEach(function(track) { track.stop(); });
     widget._cameraStream = null;
   }
@@ -693,39 +719,37 @@ CAMERA_HEAD = """
     stage.hidden = true;
     snapBtn.disabled = true;
     closeBtn.disabled = true;
+    try {
+      if (document.exitFullscreen && document.fullscreenElement) document.exitFullscreen();
+      else if (document.webkitExitFullscreen && document.webkitFullscreenElement) document.webkitExitFullscreen();
+    } catch(e) {}
   }
 
   async function startCamera(widget) {
     var video = widget.querySelector('[data-role="camera-video"]');
-    var overlay = widget.querySelector('[data-role="camera-overlay"]');
     var status = widget.querySelector('[data-role="camera-status"]');
     var stage = widget.querySelector('[data-role="camera-stage"]');
     var snapBtn = widget.querySelector('[data-role="camera-snap"]');
     var closeBtn = widget.querySelector('[data-role="camera-close"]');
-    var previewImg = document.querySelector('#template-preview img');
-    var templatePath = normalizeTemplateUrl(previewImg ? previewImg.src : getTextboxValue('camera-template-src'));
     var isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 
     closeModal(widget);
     stage.hidden = false;
-    status.textContent = 'Requesting camera access...';
+    status.textContent = '';
+
+    try {
+      var el = document.documentElement;
+      if (el.requestFullscreen) el.requestFullscreen();
+      else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+    } catch(e) {}
 
     try {
       var stream = await getCameraStream(isMobile);
 
       widget._cameraStream = stream;
       video.srcObject = stream;
-      overlay.style.display = 'none';
-      overlay.onerror = function() { overlay.style.display = 'none'; };
-      overlay.onload = function() { overlay.style.display = 'block'; };
-      if (templatePath) {
-        overlay.src = templatePath;
-      } else {
-        overlay.removeAttribute('src');
-      }
       snapBtn.disabled = false;
       closeBtn.disabled = false;
-      status.textContent = 'Align the page with the template and tap Capture.';
 
       try {
         await video.play();
@@ -736,22 +760,18 @@ CAMERA_HEAD = """
       var ready = await waitForVideoReady(video, 2500);
       if (!ready) {
         if (isMobile) {
-          status.textContent = 'Live camera failed. Opening native camera...';
           closeModal(widget);
-          var loaded = await openNativeCameraAndLoad(status);
-          if (loaded) {
-            status.textContent = 'Photo captured via native camera and loaded.';
-          } else {
-            status.textContent = 'Live camera failed and native camera was not completed.';
-          }
+          var loaded = await openNativeCameraAndLoad(widget, status);
+          if (loaded) status.textContent = 'Фото загружено.';
           return;
         }
-        status.textContent = 'Camera opened, but video is empty. Check browser camera permission and close other camera apps.';
+        status.textContent = 'Камера открыта, но видео пустое. Проверь разрешения браузера.';
       }
+      startDetection(widget);
     } catch (err) {
       console.error(err);
       closeModal(widget);
-      status.textContent = 'Camera unavailable. Open via https or localhost and allow browser access.';
+      status.textContent = 'Камера недоступна. Открой сайт через https.';
     }
   }
 
@@ -759,18 +779,38 @@ CAMERA_HEAD = """
     var video = widget.querySelector('[data-role="camera-video"]');
     var status = widget.querySelector('[data-role="camera-status"]');
 
-    if (!video.videoWidth || !video.videoHeight) {
-      status.textContent = 'Could not capture frame from camera.';
+    var w = video.videoWidth || video.clientWidth || 1280;
+    var h = video.videoHeight || video.clientHeight || 720;
+    if (!w || !h) {
+      status.textContent = 'Capture failed: no video frame.';
       return;
     }
 
     var canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
-    var dataUrl = canvas.toDataURL('image/jpeg', 0.95);
+    canvas.width = w;
+    canvas.height = h;
+    try {
+      canvas.getContext('2d').drawImage(video, 0, 0, w, h);
+    } catch (err) {
+      status.textContent = 'Capture failed: camera frame is not ready.';
+      return;
+    }
+    var dataUrl;
+    try {
+      dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+    } catch (err) {
+      status.textContent = 'Capture failed: could not encode image.';
+      return;
+    }
 
-    if (!setTextboxValue('camera-data', dataUrl)) {
+    var targetId = widget.dataset.target || 'camera-data';
+    var ok = false;
+    try {
+      ok = setTextboxValue(targetId, dataUrl);
+    } catch (err) {
+      ok = false;
+    }
+    if (!ok) {
       status.textContent = 'Could not send captured image to Gradio.';
       return;
     }
@@ -779,8 +819,7 @@ CAMERA_HEAD = """
     status.textContent = 'Photo captured and loaded into the service.';
   }
 
-  function bindCameraWidget() {
-    var widget = document.getElementById('camera-widget');
+  function bindCameraWidget(widget) {
     if (!widget || widget.dataset.bound === '1') return;
     widget.dataset.bound = '1';
 
@@ -812,28 +851,96 @@ CAMERA_HEAD = """
     });
   }
 
-  window.addEventListener('load', bindCameraWidget);
-  new MutationObserver(bindCameraWidget).observe(document.documentElement, { childList: true, subtree: true });
+  function setFrameColor(widget, found) {
+    var rects = widget.querySelectorAll('.camera-frame-overlay svg rect[stroke]');
+    var color = found ? 'rgba(34,197,94,0.95)' : 'rgba(180,180,180,0.8)';
+    rects.forEach(function(r) { r.setAttribute('stroke', color); });
+  }
+
+  function startDetection(widget) {
+    var video = widget.querySelector('[data-role="camera-video"]');
+    var status = widget.querySelector('[data-role="camera-status"]');
+    var stage = widget.querySelector('[data-role="camera-stage"]');
+    var canvas = document.createElement('canvas');
+    var ctx = canvas.getContext('2d');
+    widget._detectRunning = true;
+    widget._detectInflight = false;
+
+    async function loop() {
+      while (widget._detectRunning) {
+        await new Promise(function(r) { setTimeout(r, 1200); });
+        if (!widget._detectRunning || stage.hidden || !video.videoWidth || widget._detectInflight) continue;
+        canvas.width = 192;
+        canvas.height = Math.max(108, Math.round(video.videoHeight * 192 / video.videoWidth));
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        try {
+          widget._detectInflight = true;
+          var resp = await fetch('/api/detect_aruco', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({frame: canvas.toDataURL('image/jpeg', 0.35)})
+          });
+          if (!resp.ok) continue;
+          var data = await resp.json();
+          if (widget._detectRunning) {
+            var count = Number(data.count || 0);
+            setFrameColor(widget, count >= 1);
+            if (status) status.textContent = count >= 1 ? ('ArUco: ' + count) : '';
+          }
+        } catch(e) {
+        } finally {
+          widget._detectInflight = false;
+        }
+      }
+    }
+    loop();
+  }
+
+  function stopDetection(widget) {
+    widget._detectRunning = false;
+    widget._detectInflight = false;
+    setFrameColor(widget, false);
+  }
+
+  function bindAllCameraWidgets() {
+    document.querySelectorAll('.camera-widget').forEach(bindCameraWidget);
+  }
+
+  window.addEventListener('load', bindAllCameraWidgets);
+  new MutationObserver(bindAllCameraWidgets).observe(document.documentElement, { childList: true, subtree: true });
 })();
 </script>
 """
 
-CAMERA_PANEL = """
-<div id="camera-widget">
+def make_camera_panel(data_target="camera-data"):
+    mid = data_target.replace("-", "_")
+    return f"""
+<div class="camera-widget" data-target="{data_target}">
   <div class="camera-actions">
-    <button type="button" class="camera-btn camera-btn-primary" data-role="camera-open">Open camera</button>
+    <button type="button" class="camera-btn camera-btn-primary" data-role="camera-open">Открыть камеру</button>
   </div>
-  <div class="camera-status" data-role="camera-status">Camera is closed.</div>
+  <div class="camera-status" data-role="camera-status"></div>
   <div class="camera-stage" data-role="camera-stage" hidden>
     <div class="camera-stage-inner">
       <div class="camera-frame">
         <video data-role="camera-video" autoplay playsinline muted></video>
-        <img data-role="camera-overlay" alt="template overlay">
-        <div class="camera-guide">Align your sheet with the template</div>
+        <div class="camera-frame-overlay">
+          <svg viewBox="0 0 100 100" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <mask id="fmask_{mid}">
+                <rect width="100" height="100" fill="white"/>
+                <rect x="7" y="19" width="86" height="61" rx="3" ry="3" fill="black"/>
+              </mask>
+            </defs>
+            <rect width="100" height="100" fill="rgba(0,0,0,0.5)" mask="url(#fmask_{mid})"/>
+            <rect x="7" y="19" width="86" height="61" rx="3" ry="3"
+                  fill="none" stroke="rgba(180,180,180,0.8)" stroke-width="0.4"/>
+          </svg>
+        </div>
       </div>
       <div class="camera-modal-actions">
-        <button type="button" class="camera-btn camera-btn-primary camera-btn-lg" data-role="camera-snap" disabled>Capture</button>
-        <button type="button" class="camera-btn camera-btn-lg" data-role="camera-close" disabled>Close</button>
+        <button type="button" class="camera-btn camera-btn-primary camera-btn-lg" data-role="camera-snap" disabled>Снять</button>
+        <button type="button" class="camera-btn camera-btn-lg" data-role="camera-close" disabled>✕</button>
       </div>
     </div>
   </div>
@@ -842,10 +949,10 @@ CAMERA_PANEL = """
 
 css = """
 #main-wrap { max-width: 640px !important; margin: auto !important; }
-#camera-data, #camera-template-src { display: none !important; }
-#camera-widget { display: grid; gap: 12px; }
-#camera-widget .camera-actions { display: flex; gap: 8px; }
-#camera-widget .camera-btn {
+#camera-data, #camera-data-auto, #camera-template-src { display: none !important; }
+.camera-widget { display: grid; gap: 12px; }
+.camera-widget .camera-actions { display: flex; gap: 8px; }
+.camera-widget .camera-btn {
   border: none;
   border-radius: 12px;
   padding: 10px 14px;
@@ -854,128 +961,171 @@ css = """
   cursor: pointer;
   font-size: 14px;
 }
-#camera-widget .camera-btn-lg {
+.camera-widget .camera-btn-lg {
   padding: 12px 24px;
   font-size: 16px;
   min-width: 120px;
 }
-#camera-widget .camera-btn[disabled] { opacity: 0.55; cursor: not-allowed; }
-#camera-widget .camera-btn-primary { background: #ea580c; }
-#camera-widget .camera-status {
+.camera-widget .camera-btn[disabled] { opacity: 0.55; cursor: not-allowed; }
+.camera-widget .camera-btn-primary { background: #ea580c; }
+.camera-widget .camera-status {
   font-size: 13px;
   color: #4b5563;
 }
-#camera-widget .camera-stage {
+.camera-widget .camera-stage {
   position: fixed;
   inset: 0;
   z-index: 9999;
-  background: rgba(3, 7, 18, 0.86);
+  background: #000;
   display: none;
   align-items: center;
   justify-content: center;
-  padding: 16px;
 }
-#camera-widget .camera-stage:not([hidden]) {
+.camera-widget .camera-stage:not([hidden]) {
   display: flex;
 }
-#camera-widget .camera-stage-inner {
-  width: min(900px, 100%);
-  display: grid;
-  gap: 14px;
+.camera-widget .camera-stage-inner {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: row;
 }
-#camera-widget .camera-frame {
+.camera-widget .camera-frame {
   position: relative;
+  flex: 1;
   overflow: hidden;
-  border-radius: 16px;
-  background: #111827;
-  aspect-ratio: 4 / 3;
+  background: #000;
+  min-width: 0;
 }
-#camera-widget .camera-frame video,
-#camera-widget .camera-frame img {
+.camera-widget .camera-frame video {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
-}
-#camera-widget .camera-frame video { object-fit: cover; }
-#camera-widget .camera-frame img {
-  object-fit: contain;
-  opacity: 0.32;
+  object-fit: cover;
   pointer-events: none;
 }
-#camera-widget .camera-guide {
+.camera-widget .camera-frame-overlay {
   position: absolute;
-  left: 12px;
-  right: 12px;
-  bottom: 12px;
-  padding: 8px 10px;
-  border-radius: 10px;
-  background: rgba(17, 24, 39, 0.72);
-  color: white;
-  text-align: center;
-  font-size: 13px;
+  inset: 0;
+  pointer-events: none;
 }
-#camera-widget .camera-modal-actions {
+.camera-widget .camera-frame-overlay svg {
+  width: 100%;
+  height: 100%;
+}
+.camera-widget .camera-modal-actions {
+  width: 88px;
+  flex-shrink: 0;
   display: flex;
+  flex-direction: column;
+  align-items: center;
   justify-content: center;
-  gap: 10px;
+  gap: 12px;
+  padding: 12px 8px;
+  background: rgba(10,10,10,0.85);
+}
+.camera-widget .camera-btn-lg {
+  padding: 10px 0;
+  width: 68px;
+  font-size: 15px;
+  min-width: unset;
+  border-radius: 14px;
+}
+@media (orientation: portrait) {
+  .camera-widget .camera-stage:not([hidden]) {
+    align-items: center;
+    justify-content: center;
+  }
+  .camera-widget .camera-stage-inner {
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+  }
+  .camera-widget .camera-stage-inner::before {
+    content: "Поверни телефон горизонтально";
+    color: white;
+    font-size: 20px;
+    text-align: center;
+  }
+  .camera-widget .camera-frame,
+  .camera-widget .camera-modal-actions { display: none; }
 }
 """
 
-with gr.Blocks(title="Ink-to-Motion", head=CAMERA_HEAD) as demo:
-  with gr.Column(elem_id="main-wrap"):
+with gr.Blocks(title="Ink-to-Motion") as demo:
     gr.Markdown("# Ink-to-Motion")
+    with gr.Tabs():
 
-    with gr.Accordion("Шаг 1. Скачай шаблон", open=True):
-        gr.Markdown("Выбери шаблон, распечатай на A4.")
-        selector = gr.Dropdown(choices=list(TEMPLATES.keys()), value="Пустой лист", show_label=False)
-        preview = gr.Image(value="assets/template.png", show_label=False, interactive=False, height=300, elem_id="template-preview")
-        download = gr.DownloadButton("Скачать шаблон", value="assets/template.png", variant="secondary")
-        template_src = gr.Textbox(value="assets/template.png", elem_id="camera-template-src", container=False)
-        selector.change(fn=on_select, inputs=selector, outputs=[preview, download, template_src])
+        with gr.Tab("Пошагово"):
+            with gr.Column(elem_id="main-wrap"):
+                with gr.Accordion("Шаг 1. Скачай шаблон", open=True):
+                    gr.Markdown("Выбери шаблон, распечатай на A4.")
+                    selector = gr.Dropdown(choices=list(TEMPLATES.keys()), value="Шаблон", show_label=False)
+                    preview = gr.Image(value="assets/template.png", show_label=False, interactive=False, height=300, elem_id="template-preview")
+                    download = gr.DownloadButton("Скачать шаблон", value="assets/template.png", variant="secondary")
+                    template_src = gr.Textbox(value="assets/template.png", elem_id="camera-template-src", container=False)
+                    selector.change(fn=on_select, inputs=selector, outputs=[preview, download, template_src])
 
-    with gr.Accordion("Шаг 2. Сфотографируй рисунок", open=False):
-        gr.Markdown("Нарисуй персонажа и покажи что получилось.")
-        gr.HTML(CAMERA_PANEL)
-        camera_data = gr.Textbox(elem_id="camera-data", container=False)
-        image_in = gr.Image(show_label=False, type="pil", sources=["upload", "webcam"])
-        camera_data.change(fn=decode_camera_photo, inputs=camera_data, outputs=image_in)
+                with gr.Accordion("Шаг 2. Сфотографируй рисунок", open=False):
+                    gr.Markdown("Нарисуй персонажа и покажи что получилось.")
+                    gr.HTML(make_camera_panel("camera-data"))
+                    camera_data = gr.Textbox(elem_id="camera-data", container=False)
+                    image_in = gr.Image(show_label=False, type="pil", sources=["upload", "webcam"])
+                    camera_data.change(fn=decode_camera_photo, inputs=camera_data, outputs=image_in)
 
-    with gr.Accordion("Шаг 3. Выравнивание", open=False):
-        align_btn = gr.Button("Выровнять", variant="primary")
-        aligned_out = gr.Image(label="Выровненное фото", interactive=False, height=300)
-        align_btn.click(fn=align, inputs=image_in, outputs=aligned_out)
+                with gr.Accordion("Шаг 3. Выравнивание", open=False):
+                    align_btn = gr.Button("Выровнять", variant="primary")
+                    aligned_out = gr.Image(label="Выровненное фото", interactive=False, height=300)
+                    align_btn.click(fn=align, inputs=image_in, outputs=aligned_out)
 
-    with gr.Accordion("Шаг 4. Вырезка персонажа", open=False):
-        crop_btn = gr.Button("Вырезать", variant="primary")
-        crop_out = gr.Image(label="Результат", type="pil")
-        crop_btn.click(fn=crop, inputs=aligned_out, outputs=crop_out)
+                with gr.Accordion("Шаг 4. Вырезка персонажа", open=False):
+                    crop_btn = gr.Button("Вырезать", variant="primary")
+                    crop_out = gr.Image(label="Результат", type="pil")
+                    crop_btn.click(fn=crop, inputs=aligned_out, outputs=crop_out)
 
-    with gr.Accordion("Шаг 5. Перенос цвета + скелет", open=False):
-        gr.Markdown("Цвета с фото переносятся на оригинального персонажа.")
-        ct_btn = gr.Button("Перенести цвет", variant="primary")
-        color_out = gr.Image(label="Перенос цвета", interactive=False, height=300)
-        skel_out = gr.Image(label="Скелет + триангуляция", interactive=False, height=300)
-        ct_btn.click(fn=do_color_transfer_and_skeleton, inputs=[aligned_out, selector], outputs=[color_out, skel_out])
+                with gr.Accordion("Шаг 5. Перенос цвета + скелет", open=False):
+                    gr.Markdown("Цвета с фото переносятся на оригинального персонажа.")
+                    ct_btn = gr.Button("Перенести цвет", variant="primary")
+                    color_out = gr.Image(label="Перенос цвета", interactive=False, height=300)
+                    skel_out = gr.Image(label="Скелет + триангуляция", interactive=False, height=300)
+                    ct_btn.click(fn=do_color_transfer_and_skeleton, inputs=[aligned_out, selector], outputs=[color_out, skel_out])
 
-    frames_state = gr.State([])
+                frames_state = gr.State([])
 
-    with gr.Accordion("Шаг 6. Анимация", open=False):
-        gr.Markdown("Посмотри как персонаж оживает! Референс: [teamLab Sketch Ocean](https://www.teamlab.art/w/sketch_ocean/)")
-        with gr.Accordion("Примеры анимации", open=False):
-            with gr.Row():
-                gr.Image(value="assets/img04_anim.gif", label="Персонаж 4", interactive=False, height=200)
-                gr.Image(value="assets/img05_anim.gif", label="Персонаж 5", interactive=False, height=200)
-        anim_btn = gr.Button("Анимировать", variant="primary")
-        anim_out = gr.Image(label="Анимация")
-        anim_btn.click(fn=do_animation, inputs=[aligned_out, selector], outputs=[anim_out, frames_state])
+                with gr.Accordion("Шаг 6. Анимация", open=False):
+                    gr.Markdown("Посмотри как персонаж оживает! Референс: [teamLab Sketch Ocean](https://www.teamlab.art/w/sketch_ocean/)")
+                    with gr.Accordion("Примеры анимации", open=False):
+                        with gr.Row():
+                            gr.Image(value="assets/img04_anim.gif", label="Персонаж 4", interactive=False, height=200)
+                            gr.Image(value="assets/img05_anim.gif", label="Персонаж 5", interactive=False, height=200)
+                    anim_btn = gr.Button("Анимировать", variant="primary")
+                    anim_out = gr.Image(label="Анимация")
+                    anim_btn.click(fn=do_animation, inputs=[aligned_out, selector], outputs=[anim_out, frames_state])
 
-    with gr.Accordion("Шаг 7. На фоне", open=False):
-        gr.Markdown("Персонаж проплывает по подводному фону (CSS-анимация).")
-        composite_btn = gr.Button("Поместить на фон", variant="primary")
-        composite_out = gr.HTML(label="Результат")
-        composite_file = gr.File(label="Скачать HTML")
-        composite_btn.click(fn=do_composite, inputs=frames_state, outputs=[composite_out, composite_file])
+                with gr.Accordion("Шаг 7. На фоне", open=False):
+                    gr.Markdown("Персонаж проплывает по подводному фону (CSS-анимация).")
+                    composite_btn = gr.Button("Поместить на фон", variant="primary")
+                    composite_out = gr.HTML(label="Результат")
+                    composite_file = gr.File(label="Скачать HTML")
+                    composite_btn.click(fn=do_composite, inputs=frames_state, outputs=[composite_out, composite_file])
+
+        with gr.Tab("Авто"):
+            with gr.Column(elem_id="main-wrap"):
+                gr.HTML(make_camera_panel("camera-data-auto"))
+                camera_data_auto = gr.Textbox(elem_id="camera-data-auto", container=False)
+                image_in_auto = gr.Image(show_label=False, type="pil", sources=["upload"])
+                camera_data_auto.change(fn=decode_camera_photo, inputs=camera_data_auto, outputs=image_in_auto)
+
+from fastapi import Request
+from fastapi.responses import JSONResponse
+
+@demo.app.post("/api/detect_aruco")
+async def _detect_aruco_api(request: Request):
+    data = await request.json()
+    count = detect_aruco(data.get("frame", ""))
+    return JSONResponse({"count": int(count)})
 
 demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 7860)),
-            theme=gr.themes.Soft(primary_hue="orange"), css=css)
+            theme=gr.themes.Soft(primary_hue="orange"), css=css, head=CAMERA_HEAD)
