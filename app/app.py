@@ -356,10 +356,11 @@ def _generate_frames(aligned_img, selected_name):
                           dst_pts[simplex].tolist(), dst_img)
         frames.append(dst_img)
 
-    wave_flip = char_config.get("wave_flip")
-    if wave_flip:
-        flip = make_wave_flip_frames(frames[-1], n_frames=30, direction=wave_flip)
-        frames = frames + flip[1:]
+    # --- wave flip disabled for now ---
+    # wave_flip = char_config.get("wave_flip")
+    # if wave_flip:
+    #     flip = make_wave_flip_frames(frames[-1], n_frames=30, direction=wave_flip)
+    #     frames = frames + flip[1:]
 
     return frames
 
@@ -384,6 +385,20 @@ def _frames_to_gif(pil_frames):
     gif_frames[0].save(tmp.name, save_all=True, append_images=gif_frames[1:],
                        duration=1000 // FPS, loop=0, disposal=2, transparency=255)
     return tmp.name
+
+
+def auto_process(photo):
+    """Auto tab — full pipeline: align → animate, using first available ANIM_CHARS."""
+    if photo is None:
+        raise gr.Error("Загрузи фото.")
+    selected_name = list(ANIM_CHARS.keys())[0]
+    aligned_img = align(photo)
+    if aligned_img is None:
+        raise gr.Error("Не удалось выровнять фото.")
+    all_frames = _generate_frames(aligned_img, selected_name)
+    pil_frames = [Image.fromarray(cv2.cvtColor(f, cv2.COLOR_BGRA2RGBA)) for f in all_frames]
+    gif_path = _frames_to_gif(pil_frames)
+    return gif_path
 
 
 def do_animation(aligned_img, selected_name):
@@ -817,6 +832,20 @@ CAMERA_HEAD = """
 
     closeModal(widget);
     status.textContent = 'Photo captured and loaded into the service.';
+
+    // Auto mode: trigger Анимировать button after capture
+    if (window.__inkAutoMode && targetId === 'camera-data-auto') {
+      setTimeout(function() {
+        var autoBtn = document.querySelector('#main-wrap button.primary, #main-wrap button[variant="primary"]');
+        if (!autoBtn) {
+          // fallback: find button by text
+          document.querySelectorAll('button').forEach(function(b) {
+            if (b.textContent.trim() === 'Анимировать' && !autoBtn) autoBtn = b;
+          });
+        }
+        if (autoBtn) autoBtn.click();
+      }, 1500);
+    }
   }
 
   function bindCameraWidget(widget) {
@@ -908,6 +937,61 @@ CAMERA_HEAD = """
 
   window.addEventListener('load', bindAllCameraWidgets);
   new MutationObserver(bindAllCameraWidgets).observe(document.documentElement, { childList: true, subtree: true });
+
+  // --- Auto mode: ?auto=1 opens camera automatically ---
+  var params = new URLSearchParams(window.location.search);
+  if (params.get('auto') === '1') {
+    window.__inkAutoMode = true;
+    window.addEventListener('load', function() {
+      setTimeout(function() {
+        var autoWidget = document.querySelector('.camera-widget[data-target="camera-data-auto"]');
+        if (autoWidget) {
+          var openBtn = autoWidget.querySelector('[data-role="camera-open"]');
+          if (openBtn && !openBtn.disabled) openBtn.click();
+        }
+      }, 1500);
+    });
+  }
+
+  // --- QR code generation (minimal inline, no external deps) ---
+  function generateQR(container) {
+    var url = window.location.origin + window.location.pathname + '?auto=1';
+    container.innerHTML = '<div style="text-align:center;padding:8px;">' +
+      '<canvas id="qr-canvas"></canvas>' +
+      '<div style="font-size:11px;color:#888;margin-top:4px;">Сканируй для быстрого старта</div></div>';
+    var s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js';
+    s.onload = function() {
+      var qr = qrcode(0, 'M');
+      qr.addData(url);
+      qr.make();
+      var canvas = document.getElementById('qr-canvas');
+      var size = 140;
+      var modules = qr.getModuleCount();
+      var cellSize = Math.floor(size / modules);
+      canvas.width = cellSize * modules;
+      canvas.height = cellSize * modules;
+      var ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#000000';
+      for (var r = 0; r < modules; r++) {
+        for (var c = 0; c < modules; c++) {
+          if (qr.isDark(r, c)) {
+            ctx.fillRect(c * cellSize, r * cellSize, cellSize, cellSize);
+          }
+        }
+      }
+    };
+    document.head.appendChild(s);
+  }
+
+  window.addEventListener('load', function() {
+    setTimeout(function() {
+      var qrEl = document.getElementById('qr-auto-container');
+      if (qrEl) generateQR(qrEl);
+    }, 1000);
+  });
 })();
 </script>
 """
@@ -929,19 +1013,18 @@ def make_camera_panel(data_target="camera-data"):
             <defs>
               <mask id="fmask_{mid}">
                 <rect width="100" height="100" fill="white"/>
-                <rect x="7" y="19" width="86" height="61" rx="3" ry="3" fill="black"/>
+                <rect x="17" y="8" width="66" height="84" rx="3" ry="3" fill="black"/>
               </mask>
             </defs>
             <rect width="100" height="100" fill="rgba(0,0,0,0.5)" mask="url(#fmask_{mid})"/>
-            <rect x="7" y="19" width="86" height="61" rx="3" ry="3"
+            <rect x="17" y="8" width="66" height="84" rx="3" ry="3"
                   fill="none" stroke="rgba(180,180,180,0.8)" stroke-width="0.4"/>
           </svg>
         </div>
       </div>
-      <div class="camera-modal-actions">
-        <button type="button" class="camera-btn camera-btn-primary camera-btn-lg" data-role="camera-snap" disabled>Снять</button>
-        <button type="button" class="camera-btn camera-btn-lg" data-role="camera-close" disabled>✕</button>
-      </div>
+      <button type="button" class="camera-close-x" data-role="camera-close" disabled>✕</button>
+      <div class="camera-hint">Поместите шаблон в рамку</div>
+      <button type="button" class="camera-shutter" data-role="camera-snap" disabled><span></span></button>
     </div>
   </div>
 </div>
@@ -960,11 +1043,6 @@ css = """
   color: white;
   cursor: pointer;
   font-size: 14px;
-}
-.camera-widget .camera-btn-lg {
-  padding: 12px 24px;
-  font-size: 16px;
-  min-width: 120px;
 }
 .camera-widget .camera-btn[disabled] { opacity: 0.55; cursor: not-allowed; }
 .camera-widget .camera-btn-primary { background: #ea580c; }
@@ -987,15 +1065,13 @@ css = """
 .camera-widget .camera-stage-inner {
   width: 100%;
   height: 100%;
-  display: flex;
-  flex-direction: row;
+  position: relative;
 }
 .camera-widget .camera-frame {
-  position: relative;
-  flex: 1;
+  position: absolute;
+  inset: 0;
   overflow: hidden;
   background: #000;
-  min-width: 0;
 }
 .camera-widget .camera-frame video {
   position: absolute;
@@ -1014,34 +1090,70 @@ css = """
   width: 100%;
   height: 100%;
 }
-.camera-widget .camera-modal-actions {
-  width: 88px;
-  flex-shrink: 0;
+.camera-widget .camera-close-x {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 10;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0,0,0,0.5);
+  color: white;
+  font-size: 22px;
+  cursor: pointer;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 12px;
-  padding: 12px 8px;
-  background: rgba(10,10,10,0.85);
+  line-height: 1;
 }
-.camera-widget .camera-btn-lg {
-  padding: 10px 0;
+.camera-widget .camera-close-x[disabled] { opacity: 0.55; cursor: not-allowed; }
+.camera-widget .camera-hint {
+  position: absolute;
+  bottom: 2%;
+  left: 17%;
+  width: 66%;
+  text-align: center;
+  color: white;
+  font-size: 16px;
+  z-index: 10;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.7);
+  pointer-events: none;
+}
+.camera-widget .camera-shutter {
+  position: absolute;
+  top: 50%;
+  right: 4%;
+  transform: translateY(-50%);
+  z-index: 10;
   width: 68px;
-  font-size: 15px;
-  min-width: unset;
-  border-radius: 14px;
+  height: 68px;
+  border-radius: 50%;
+  border: 4px solid white;
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
+.camera-widget .camera-shutter span {
+  display: block;
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  background: white;
+}
+.camera-widget .camera-shutter:active span {
+  background: #ccc;
+}
+.camera-widget .camera-shutter[disabled] { opacity: 0.55; cursor: not-allowed; }
 @media (orientation: portrait) {
-  .camera-widget .camera-stage:not([hidden]) {
-    align-items: center;
-    justify-content: center;
-  }
   .camera-widget .camera-stage-inner {
-    flex-direction: column;
+    display: flex;
     align-items: center;
     justify-content: center;
-    gap: 16px;
   }
   .camera-widget .camera-stage-inner::before {
     content: "Поверни телефон горизонтально";
@@ -1050,13 +1162,31 @@ css = """
     text-align: center;
   }
   .camera-widget .camera-frame,
-  .camera-widget .camera-modal-actions { display: none; }
+  .camera-widget .camera-close-x,
+  .camera-widget .camera-hint,
+  .camera-widget .camera-shutter { display: none; }
 }
 """
 
 with gr.Blocks(title="Ink-to-Motion") as demo:
     gr.Markdown("# Ink-to-Motion")
     with gr.Tabs():
+
+        with gr.Tab("Авто"):
+            with gr.Column(elem_id="main-wrap"):
+                _cam_html = make_camera_panel("camera-data-auto")
+                gr.HTML(f"""
+                <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
+                  <div>{_cam_html}</div>
+                  <div id="qr-auto-container" style="flex-shrink:0;"></div>
+                </div>
+                """)
+                camera_data_auto = gr.Textbox(elem_id="camera-data-auto", container=False)
+                image_in_auto = gr.Image(show_label=False, type="pil", sources=["upload"])
+                camera_data_auto.change(fn=decode_camera_photo, inputs=camera_data_auto, outputs=image_in_auto)
+                auto_btn = gr.Button("Анимировать", variant="primary")
+                auto_result = gr.Image(show_label=False)
+                auto_btn.click(fn=auto_process, inputs=image_in_auto, outputs=auto_result)
 
         with gr.Tab("Пошагово"):
             with gr.Column(elem_id="main-wrap"):
@@ -1077,12 +1207,12 @@ with gr.Blocks(title="Ink-to-Motion") as demo:
 
                 with gr.Accordion("Шаг 3. Выравнивание", open=False):
                     align_btn = gr.Button("Выровнять", variant="primary")
-                    aligned_out = gr.Image(label="Выровненное фото", interactive=False, height=300)
+                    aligned_out = gr.Image(show_label=False, interactive=False, height=300)
                     align_btn.click(fn=align, inputs=image_in, outputs=aligned_out)
 
                 with gr.Accordion("Шаг 4. Вырезка персонажа", open=False):
                     crop_btn = gr.Button("Вырезать", variant="primary")
-                    crop_out = gr.Image(label="Результат", type="pil")
+                    crop_out = gr.Image(show_label=False, type="pil")
                     crop_btn.click(fn=crop, inputs=aligned_out, outputs=crop_out)
 
                 with gr.Accordion("Шаг 5. Перенос цвета + скелет", open=False):
@@ -1101,7 +1231,7 @@ with gr.Blocks(title="Ink-to-Motion") as demo:
                             gr.Image(value="assets/img04_anim.gif", label="Персонаж 4", interactive=False, height=200)
                             gr.Image(value="assets/img05_anim.gif", label="Персонаж 5", interactive=False, height=200)
                     anim_btn = gr.Button("Анимировать", variant="primary")
-                    anim_out = gr.Image(label="Анимация")
+                    anim_out = gr.Image(show_label=False)
                     anim_btn.click(fn=do_animation, inputs=[aligned_out, selector], outputs=[anim_out, frames_state])
 
                 with gr.Accordion("Шаг 7. На фоне", open=False):
@@ -1110,13 +1240,6 @@ with gr.Blocks(title="Ink-to-Motion") as demo:
                     composite_out = gr.HTML(label="Результат")
                     composite_file = gr.File(label="Скачать HTML")
                     composite_btn.click(fn=do_composite, inputs=frames_state, outputs=[composite_out, composite_file])
-
-        with gr.Tab("Авто"):
-            with gr.Column(elem_id="main-wrap"):
-                gr.HTML(make_camera_panel("camera-data-auto"))
-                camera_data_auto = gr.Textbox(elem_id="camera-data-auto", container=False)
-                image_in_auto = gr.Image(show_label=False, type="pil", sources=["upload"])
-                camera_data_auto.change(fn=decode_camera_photo, inputs=camera_data_auto, outputs=image_in_auto)
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
