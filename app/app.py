@@ -833,18 +833,31 @@ CAMERA_HEAD = """
     closeModal(widget);
     status.textContent = 'Photo captured and loaded into the service.';
 
-    // Auto mode: trigger Анимировать button after capture
+    // Auto mode: wait for image to load in Gradio, then trigger Анимировать
     if (window.__inkAutoMode && targetId === 'camera-data-auto') {
-      setTimeout(function() {
-        var autoBtn = document.querySelector('#main-wrap button.primary, #main-wrap button[variant="primary"]');
-        if (!autoBtn) {
-          // fallback: find button by text
-          document.querySelectorAll('button').forEach(function(b) {
-            if (b.textContent.trim() === 'Анимировать' && !autoBtn) autoBtn = b;
+      (function waitAndAnimate() {
+        var imgContainer = document.querySelector('#main-wrap .image-container img, #main-wrap .upload-container img');
+        function findAnimBtn() {
+          var btn = null;
+          document.querySelectorAll('#main-wrap button').forEach(function(b) {
+            if (b.textContent.trim() === 'Анимировать') btn = b;
           });
+          return btn;
         }
-        if (autoBtn) autoBtn.click();
-      }, 1500);
+        function tryClick() {
+          var imgs = document.querySelectorAll('#main-wrap img');
+          var loaded = false;
+          imgs.forEach(function(img) {
+            if (img.src && img.src.startsWith('blob:') && img.naturalWidth > 0) loaded = true;
+          });
+          if (loaded) {
+            var btn = findAnimBtn();
+            if (btn) { btn.click(); return; }
+          }
+          setTimeout(tryClick, 500);
+        }
+        setTimeout(tryClick, 1000);
+      })();
     }
   }
 
@@ -1029,11 +1042,11 @@ def make_camera_panel(data_target="camera-data"):
             <defs>
               <mask id="fmask_{mid}">
                 <rect width="100" height="100" fill="white"/>
-                <rect x="17" y="8" width="66" height="84" rx="3" ry="3" fill="black"/>
+                <rect x="22" y="8" width="56" height="84" rx="3" ry="3" fill="black"/>
               </mask>
             </defs>
             <rect width="100" height="100" fill="rgba(0,0,0,0.5)" mask="url(#fmask_{mid})"/>
-            <rect x="17" y="8" width="66" height="84" rx="3" ry="3"
+            <rect x="22" y="8" width="56" height="84" rx="3" ry="3"
                   fill="none" stroke="rgba(180,180,180,0.8)" stroke-width="0.4"/>
           </svg>
         </div>
@@ -1128,8 +1141,8 @@ css = """
 .camera-widget .camera-hint {
   position: absolute;
   bottom: 2%;
-  left: 17%;
-  width: 66%;
+  left: 22%;
+  width: 56%;
   text-align: center;
   color: white;
   font-size: 16px;
