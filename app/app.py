@@ -938,19 +938,24 @@ CAMERA_HEAD = """
   window.addEventListener('load', bindAllCameraWidgets);
   new MutationObserver(bindAllCameraWidgets).observe(document.documentElement, { childList: true, subtree: true });
 
-  // --- Auto mode: ?auto=1 opens camera automatically ---
+  // --- Auto mode: ?auto=1 opens camera immediately ---
   var params = new URLSearchParams(window.location.search);
   if (params.get('auto') === '1') {
     window.__inkAutoMode = true;
-    window.addEventListener('load', function() {
-      setTimeout(function() {
-        var autoWidget = document.querySelector('.camera-widget[data-target="camera-data-auto"]');
-        if (autoWidget) {
-          var openBtn = autoWidget.querySelector('[data-role="camera-open"]');
-          if (openBtn && !openBtn.disabled) openBtn.click();
+    (function waitForAutoWidget() {
+      function tryOpen() {
+        var w = document.querySelector('.camera-widget[data-target="camera-data-auto"]');
+        if (w && w.dataset.bound === '1') {
+          startCamera(w);
+          return true;
         }
-      }, 1500);
-    });
+        return false;
+      }
+      if (tryOpen()) return;
+      new MutationObserver(function(_, obs) {
+        if (tryOpen()) obs.disconnect();
+      }).observe(document.documentElement, { childList: true, subtree: true });
+    })();
   }
 
   // --- QR code generation (minimal inline, no external deps) ---
