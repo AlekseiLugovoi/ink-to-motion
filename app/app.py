@@ -390,7 +390,7 @@ def _frames_to_gif(pil_frames):
 def auto_process(photo):
     """Auto tab — full pipeline: align → animate, using first available ANIM_CHARS."""
     if photo is None:
-        raise gr.Error("Загрузи фото.")
+        return None
     selected_name = list(ANIM_CHARS.keys())[0]
     aligned_img = align(photo)
     if aligned_img is None:
@@ -801,15 +801,27 @@ CAMERA_HEAD = """
       return;
     }
 
-    var canvas = document.createElement('canvas');
-    canvas.width = w;
-    canvas.height = h;
+    // Crop to guide frame region (matching SVG overlay: x=22%, y=8%, w=56%, h=84%)
+    var cx = Math.round(w * 0.22);
+    var cy = Math.round(h * 0.08);
+    var cw = Math.round(w * 0.56);
+    var ch = Math.round(h * 0.84);
+
+    var fullCanvas = document.createElement('canvas');
+    fullCanvas.width = w;
+    fullCanvas.height = h;
     try {
-      canvas.getContext('2d').drawImage(video, 0, 0, w, h);
+      fullCanvas.getContext('2d').drawImage(video, 0, 0, w, h);
     } catch (err) {
       status.textContent = 'Capture failed: camera frame is not ready.';
       return;
     }
+
+    var canvas = document.createElement('canvas');
+    canvas.width = cw;
+    canvas.height = ch;
+    canvas.getContext('2d').drawImage(fullCanvas, cx, cy, cw, ch, 0, 0, cw, ch);
+
     var dataUrl;
     try {
       dataUrl = canvas.toDataURL('image/jpeg', 0.92);
@@ -833,32 +845,7 @@ CAMERA_HEAD = """
     closeModal(widget);
     status.textContent = 'Photo captured and loaded into the service.';
 
-    // Auto mode: wait for image to load in Gradio, then trigger Анимировать
-    if (window.__inkAutoMode && targetId === 'camera-data-auto') {
-      (function waitAndAnimate() {
-        var imgContainer = document.querySelector('#main-wrap .image-container img, #main-wrap .upload-container img');
-        function findAnimBtn() {
-          var btn = null;
-          document.querySelectorAll('#main-wrap button').forEach(function(b) {
-            if (b.textContent.trim() === 'Анимировать') btn = b;
-          });
-          return btn;
-        }
-        function tryClick() {
-          var imgs = document.querySelectorAll('#main-wrap img');
-          var loaded = false;
-          imgs.forEach(function(img) {
-            if (img.src && img.src.startsWith('blob:') && img.naturalWidth > 0) loaded = true;
-          });
-          if (loaded) {
-            var btn = findAnimBtn();
-            if (btn) { btn.click(); return; }
-          }
-          setTimeout(tryClick, 500);
-        }
-        setTimeout(tryClick, 1000);
-      })();
-    }
+    // Auto-animation is handled by Gradio event chain (image_in_auto.change)
   }
 
   function bindCameraWidget(widget) {
@@ -1216,6 +1203,8 @@ with gr.Blocks(title="Ink-to-Motion") as demo:
                 auto_btn = gr.Button("Анимировать", variant="primary")
                 auto_result = gr.Image(show_label=False)
                 auto_btn.click(fn=auto_process, inputs=image_in_auto, outputs=auto_result)
+                # Auto-animate as soon as image loads (camera or upload)
+                image_in_auto.change(fn=auto_process, inputs=image_in_auto, outputs=auto_result)
 
         with gr.Tab("Пошагово"):
             with gr.Column(elem_id="main-wrap"):
