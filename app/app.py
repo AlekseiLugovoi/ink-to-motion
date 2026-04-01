@@ -986,12 +986,23 @@ CAMERA_HEAD = """
     document.head.appendChild(s);
   }
 
-  window.addEventListener('load', function() {
-    setTimeout(function() {
-      var qrEl = document.getElementById('qr-auto-container');
-      if (qrEl) generateQR(qrEl);
-    }, 1000);
-  });
+  // Wait for Gradio to render the QR container, then generate
+  (function waitForQR() {
+    var qrEl = document.getElementById('qr-auto-container');
+    if (qrEl && !qrEl.dataset.qrDone) {
+      qrEl.dataset.qrDone = '1';
+      generateQR(qrEl);
+      return;
+    }
+    new MutationObserver(function(_, obs) {
+      var el = document.getElementById('qr-auto-container');
+      if (el && !el.dataset.qrDone) {
+        el.dataset.qrDone = '1';
+        obs.disconnect();
+        generateQR(el);
+      }
+    }).observe(document.documentElement, { childList: true, subtree: true });
+  })();
 })();
 </script>
 """
