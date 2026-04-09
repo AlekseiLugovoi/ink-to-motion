@@ -3,56 +3,16 @@
 Рисунок на бумаге → оцифровка → анимация \
 DEMO: https://ink-to-motion-production.up.railway.app
 
-**TODO:**
+## Требования к железу (app.py)
 
-<details>
-<summary>2026-03-22</summary>
+| | Минимум | Рекомендуется |
+|---|---|---|
+| **CPU** | любой x86-64 | 2+ ядра |
+| **RAM** | 512 MB | 1 GB |
+| **GPU** | не требуется | не требуется |
+| **Диск** | ~200 MB (модель rembg u2net) | ~200 MB |
 
-- [x] Сделать нормальный перенос цветов
-    - Маска на внутреннюю часть шаблона?
-- [ ] Сделать больше персонажей
-
-</details>
-
-<details>
-<summary>2026-03-18</summary>
-
-- [x] Новый шаблон
-- [x] Новые целевые персонажи
-- [x] Перенос цвета на детерминированного персонажа
-- [x] Попытка анимации (скелет + триангуляция)
-- [x] Наложение анимации на фоне
-- [x] MVP сервиса через UI (gradio)
-- [x] Поднять сервис на Railway
-
-### Заметки (поштормили)
-
-- предпосылки:
-    - есть один заранее известный (полностью детерменированный) персонаж
-        - заранее хорошо прорисован в нормальной позе
-        - наложен скелет (?)
-        - понятная анимация (раскадровка или все-таки этот скелет как-то двигать)
-- приземлить вырезание персонажа (как?)
-- квадратики мб показывают еще и направление
-- прототип ручной отрисовки ок, но не для масштабирования
-- ок если генерация создается только один раз (не каждый раз при запросе анимации)
-- мэш 3д - разметить скелет (руками)
-
-</details>
-
-<details>
-<summary>2026-03-14</summary>
-
-- [x] Причесать гит: Общий пайплайн, примеры, TODO
-- [ ] 10-20шт примеров (для флоу B)
-- [ ] Пример раскадровки
-- [x] 🆕 Выравнивание по ArUco-маркерам шаблон
-- [x] 🆕 Примеры выравнивания
-- [x] 🆕 Проработка флоу A: четкое наложение красок
-
-</details>
-
-
+Весь пайплайн работает на CPU: OpenCV (ArUco, гомография, warp), SciPy (Delaunay), NumPy (affine-деформация), rembg (u2net, inference на CPU). GPU не используется.
 
 ## Пайплайн
 
@@ -64,23 +24,23 @@ DEMO: https://ink-to-motion-production.up.railway.app
 - служат ориентиром при съёмке — все 4 маркера должны быть в кадре
 - помогают оценить качество фото — сильное искажение маркеров → предупреждение «переснимите»
 
-| Пустой | С персонажем |
-|---|---|
-| <img src="preprocessing/output/template.png" width="300"> | <img src="preprocessing/output/img01_template.png" width="300"> |
+Для флоу с известным контуром персонажа готовим шаблон заранее: рисуем контур, делаем маску силуэта и вручную размечаем скелет (keypoints + кости). Всё это хранится рядом и используется на шагах оцифровки и анимации.
+
+| Пустой шаблон | Персонаж | Маска | Скелет |
+|---|---|---|---|
+| <img src="preprocessing/templates/template.png" width="200"> | <img src="preprocessing/templates/001/img.png" width="200"> | <img src="preprocessing/templates/001/mask.png" width="200"> | <img src="preprocessing/templates/001/skeleton.png" width="200"> |
 
 ### 1. Выравнивание
 
-> Фото шаблона → детекция маркеров → гомография → выравнивание на координаты шаблона.
-> Качество выравнивания оцениваем по отклонению углов маркеров (px) после гомографии.
+- Фото шаблона → 
+- Детекция маркеров → 
+- Гомография → 
+- Выравнивание на координаты шаблона
+    - Качество выравнивания оцениваем по отклонению углов маркеров (px) после гомографии.
 
 | Фото | Выровненное |
 |---|---|
-| <img src="preprocessing/output/img01_photo.jpg" width="300"> | <img src="preprocessing/output/img01_photo_aligned.jpg" width="300"> |
-| <img src="preprocessing/output/img01_photo_bad.jpg" width="300"> | <img src="preprocessing/output/img01_photo_bad_aligned.jpg" width="300"> |
-| <img src="preprocessing/output/img03_photo.jpg" width="300"> | <img src="preprocessing/output/img03_photo_aligned.jpg" width="300"> |
-| <img src="preprocessing/output/img03_photo_bad.jpg" width="300"> | <img src="preprocessing/output/img03_photo_bad_aligned.jpg" width="300"> |
-| <img src="preprocessing/output/img04_photo.jpg" width="300"> | <img src="preprocessing/output/img04_photo_aligned.jpg" width="300"> |
-| <img src="preprocessing/output/img04_photo_bad.jpg" width="300"> | <img src="preprocessing/output/img04_photo_bad_aligned.jpg" width="300"> |
+| <img src="preprocessing/output/001_photo_v2_rotated.jpg" width="300"> | <img src="preprocessing/output/001_photo_v2_aligned.jpg" width="300"> |
 
 **TODO:**
 - [ ] более точная оценка качества фото (дисторсия, сдвиг в центре, а не только на маркерах)
@@ -88,6 +48,17 @@ DEMO: https://ink-to-motion-production.up.railway.app
 - [ ] замер времени на весь шаг (детекция маркеров + гомография + warp)
 
 ### 2. Оцифровка персонажа
+
+> Выровненное фото точно совпадает с шаблоном → переносим цвет с фото на чистый контур по маске. Маска разделяет пиксели на три зоны: контур (чёрный), заливка (цвет с фото), фон (белый).
+
+| Контур | Выровненное фото | Результат |
+|---|---|---|
+| <img src="preprocessing/templates/001/img.png" width="250"> | <img src="preprocessing/output/001_photo_v2_aligned.jpg" width="250"> | <img src="preprocessing/output/001_photo_v2_colored.png" width="250"> |
+
+---
+
+<details>
+<summary>Старый флоу (несколько персонажей)</summary>
 
 Два сценария в зависимости от того, был ли контур на шаблоне:
 
@@ -114,6 +85,8 @@ DEMO: https://ink-to-motion-production.up.railway.app
 **TODO:**
 - [ ] сравнить модели сегментации (rembg, SAM2, и др.)
 - [ ] замер времени
+
+</details>
 
 ### 3. Улучшение рисунка (опционально)
 

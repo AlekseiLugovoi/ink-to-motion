@@ -1,0 +1,44 @@
+{
+  "left_fin1": {
+    "dx": 12,
+    "dy": 20,
+    "freq": 1.0,
+    "phase": 0.0
+  },
+  "right_fin1": {
+    "dx": 12,
+    "dy": 20,
+    "freq": 1.0,
+    "phase": 0.0
+  },
+  "whisker_left": {
+    "dx": 8,
+    "dy": 5,
+    "freq": 1.0,
+    "phase": 0.0
+  },
+  "whisker_right": {
+    "dx": 8,
+    "dy": 5,
+    "freq": 1.0,
+    "phase": 0.0
+  },
+  "tail1": {
+    "dx": 5,
+    "dy": 0,
+    "freq": 2.0,
+    "phase": 0.0
+  },
+  "tail2": {
+    "dx": 5,
+    "dy": 0,
+    "freq": 2.0,
+    "phase": 0.0
+  },
+  "tail3": {
+    "dx": 5,
+    "dy": 0,
+    "freq": 2.0,
+    "phase": 0.0
+  }
+}

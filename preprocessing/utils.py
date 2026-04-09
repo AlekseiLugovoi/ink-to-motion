@@ -327,51 +327,282 @@ def extract_colored(aligned_img, meta=None, white_thresh=230):
     return {"rgba": rgba, "crop": crop, "mask": mask}
 
 
-def transfer_color(aligned_img, original_path, image_rect, line_thresh=128, sat_thresh=40):
-    """Transfer colors from aligned photo onto the original digital drawing.
-
-    image_rect: [x, y, w, h] — position of the character on the template
-    (returned by overlay_character).
+def transfer_color(aligned_img, original_path, mask_path, image_rect,
+                    denoise=True, smooth_color=True):
+    """Перенос цвета с фото на оригинал через цветовую маску.
+    Зеленый (0,255,0) в маске — зона для заливки.
+    Прозрачное — фон. Все остальное (черный/белый) — остается из оригинала.
     """
     ix, iy, iw, ih = image_rect
-
     photo_crop = aligned_img[iy : iy + ih, ix : ix + iw]
 
+    # Загружаем оригинал и ресайзим
     original = cv2.imread(str(original_path), cv2.IMREAD_UNCHANGED)
-    if original is None:
-        raise FileNotFoundError(f"Cannot read: {original_path}")
+    if original is None: raise FileNotFoundError(f"Cannot read: {original_path}")
     original = cv2.resize(original, (iw, ih), interpolation=cv2.INTER_AREA)
 
+    # Загружаем маску со всеми каналами
+    mask_img = cv2.imread(str(mask_path), cv2.IMREAD_UNCHANGED)
+    if mask_img is None: raise FileNotFoundError(f"Cannot read: {mask_path}")
+    mask_img = cv2.resize(mask_img, (iw, ih), interpolation=cv2.INTER_NEAREST)
+
+    # Определяем зону заливки: зеленый (B=0, G=255, R=0) и не прозрачно
+    if mask_img.shape[2] == 4:
+        is_fill = (mask_img[:,:,0] == 0) & (mask_img[:,:,1] == 255) & (mask_img[:,:,2] == 0) & (mask_img[:,:,3] > 0)
+        final_alpha = mask_img[:, :, 3].copy()
+    else:
+        is_fill = (mask_img[:,:,0] == 0) & (mask_img[:,:,1] == 255) & (mask_img[:,:,2] == 0)
+        final_alpha = (mask_img.mean(axis=2) < 250).astype(np.uint8) * 255
+
+    # Подготовка цветов с фото (шумоподавление и сглаживание)
+    clean = photo_crop
+    if denoise:
+        clean = cv2.fastNlMeansDenoisingColored(clean, None, 8, 8, 7, 21)
+    if smooth_color:
+        lab = cv2.cvtColor(clean, cv2.COLOR_BGR2LAB)
+        L, A, B = cv2.split(lab)
+        A = cv2.GaussianBlur(A, (0, 0), 3.0)
+        B = cv2.GaussianBlur(B, (0, 0), 3.0)
+        clean = cv2.cvtColor(cv2.merge([L, A, B]), cv2.COLOR_LAB2BGR)
+
+    # За основу берем оригинал (чтобы сохранить контуры и свет)
     if original.shape[2] == 4:
-        alpha_ch = original[:, :, 3:4] / 255.0
-        original_bgr = (original[:, :, :3] * alpha_ch + 255 * (1 - alpha_ch)).astype(np.uint8)
-        orig_alpha = original[:, :, 3]
+        a_ch = original[:, :, 3:4] / 255.0
+        result = (original[:, :, :3] * a_ch + 255 * (1 - a_ch)).astype(np.uint8)
     else:
-        original_bgr = original
-        orig_alpha = None
+        result = original.copy()
 
-    result = original_bgr.copy()
+    # Заполняем только "зеленую" область цветами с фото
+    result[is_fill] = clean[is_fill]
+    
+    rgba = cv2.merge([*cv2.split(result), final_alpha])
+    return {"rgba": rgba, "result": result, "is_fill": is_fill}
 
-    original_gray = cv2.cvtColor(original_bgr, cv2.COLOR_BGR2GRAY)
-    is_line = (original_gray < line_thresh).astype(np.uint8)
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
-    is_line_dilated = cv2.dilate(is_line, kernel).astype(bool)
-    is_fill = ~is_line_dilated
 
-    photo_hsv = cv2.cvtColor(photo_crop, cv2.COLOR_BGR2HSV)
-    is_colored = photo_hsv[:, :, 1] > sat_thresh
+# ---------------------------------------------------------------------------
+#  5. Skeleton markup
+# ---------------------------------------------------------------------------
 
-    mask = is_fill & is_colored
-    result[mask] = photo_crop[mask]
-
-    if orig_alpha is not None:
-        alpha = orig_alpha.copy()
-        alpha[mask] = 255
+def _load_display_base(img_path):
+    img = cv2.imread(str(img_path), cv2.IMREAD_UNCHANGED)
+    if img is None:
+        raise FileNotFoundError(f"Cannot read: {img_path}")
+    ih, iw = img.shape[:2]
+    if img.shape[2] == 4:
+        alpha = img[:, :, 3:4] / 255.0
+        bgr = img[:, :, :3]
+        display = (bgr * alpha + 255 * (1 - alpha)).astype(np.uint8)
     else:
-        result_gray = cv2.cvtColor(result, cv2.COLOR_BGR2GRAY)
-        alpha = (result_gray < 230).astype(np.uint8) * 255
+        display = img.copy()
+    return display, iw, ih
 
-    b, g, r = cv2.split(result)
-    rgba = cv2.merge([b, g, r, alpha])
 
-    return {"rgba": rgba, "result": result, "is_fill": is_fill, "is_colored": is_colored}
+def markup_skeleton(img_path, point_names=None):
+    """Интерактивная разметка скелета.
+
+    Два режима:
+    - point_names задан (список) → кликаешь точки по порядку
+    - point_names=None → LMB ставит точку, набираешь имя с клавиатуры, Enter подтверждает
+
+    RMB = undo, ESC = готово. Backspace = стереть символ.
+    Возвращает keypoints: {"name": [nx, ny], ...} — нормализованные 0..1.
+    """
+    display_base, iw, ih = _load_display_base(img_path)
+    points = []         # [(x, y, name), ...]
+    pending = [None]    # (x, y) ждёт имя
+    typing = [""]       # текущий набираемый текст
+
+    def redraw():
+        display = display_base.copy()
+        for x, y, name in points:
+            cv2.circle(display, (x, y), 6, (0, 0, 255), -1)
+            cv2.circle(display, (x, y), 6, (255, 255, 255), 2)
+            cv2.putText(display, name, (x + 10, y - 5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 180, 0), 1)
+        if pending[0]:
+            px, py = pending[0]
+            cv2.circle(display, (px, py), 8, (0, 150, 255), 2)
+            label = typing[0] + "_" if typing[0] else "type name..."
+            cv2.putText(display, label, (px + 10, py - 5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 150, 255), 1)
+        n = len(points)
+        if point_names:
+            total = len(point_names)
+            if n < total:
+                txt = f"Click: {point_names[n]} ({n}/{total}) | RMB=undo"
+            else:
+                txt = f"Done ({total}/{total})! Press any key"
+        elif pending[0]:
+            txt = f"[{n} pts] Type name, Enter=ok, Backspace=del"
+        else:
+            txt = f"[{n} pts] LMB=add, RMB=undo, ESC=done"
+        cv2.putText(display, txt, (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 180, 255), 2)
+        cv2.imshow("Skeleton Markup", display)
+
+    def on_mouse(event, x, y, flags, param):
+        if event == cv2.EVENT_LBUTTONDOWN:
+            if point_names:
+                if len(points) < len(point_names):
+                    points.append((x, y, point_names[len(points)]))
+                    redraw()
+            elif not pending[0]:
+                pending[0] = (x, y)
+                typing[0] = ""
+                redraw()
+        elif event == cv2.EVENT_RBUTTONDOWN:
+            if pending[0]:
+                pending[0] = None
+                typing[0] = ""
+            elif points:
+                points.pop()
+            redraw()
+
+    redraw()
+    cv2.setMouseCallback("Skeleton Markup", on_mouse)
+
+    while True:
+        key = cv2.waitKey(0) & 0xFF
+        if key == 27:  # ESC
+            break
+        if point_names:
+            if len(points) >= len(point_names):
+                break
+            continue
+        if pending[0]:
+            if key == 13:  # Enter
+                if typing[0]:
+                    points.append((*pending[0], typing[0]))
+                pending[0] = None
+                typing[0] = ""
+                redraw()
+            elif key == 8:  # Backspace
+                typing[0] = typing[0][:-1]
+                redraw()
+            elif 32 <= key < 127:  # printable ASCII
+                typing[0] += chr(key)
+                redraw()
+
+    cv2.destroyAllWindows()
+
+    keypoints = {}
+    for x, y, name in points:
+        keypoints[name] = [round(x / iw, 4), round(y / ih, 4)]
+    return keypoints
+
+
+def draw_skeleton(img_path, keypoints):
+    """Нарисовать точки скелета поверх изображения. Возвращает BGR numpy array."""
+    display, iw, ih = _load_display_base(img_path)
+    for name, (nx, ny) in keypoints.items():
+        x, y = int(nx * iw), int(ny * ih)
+        cv2.circle(display, (x, y), 6, (0, 0, 255), -1)
+        cv2.circle(display, (x, y), 6, (255, 255, 255), 2)
+        cv2.putText(display, name, (x + 10, y - 5),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 180, 0), 1)
+    return display
+
+
+def save_skeleton(img_path, keypoints, output_dir, char_id=None):
+    """Сохранить skeleton.json и skeleton.png.
+
+    output_dir: папка для сохранения (например templates/001/).
+    Возвращает пути к сохранённым файлам.
+    """
+    import json
+
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    img = cv2.imread(str(img_path), cv2.IMREAD_UNCHANGED)
+    ih, iw = img.shape[:2]
+
+    data = {
+        "image": str(img_path),
+        "image_size": [iw, ih],
+        "keypoints": keypoints,
+    }
+    if char_id is not None:
+        data["char_id"] = char_id
+
+    json_path = out / "skeleton.json"
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+    vis = draw_skeleton(img_path, keypoints)
+    png_path = out / "skeleton.png"
+    cv2.imwrite(str(png_path), vis)
+
+    return {"json_path": str(json_path), "png_path": str(png_path)}
+
+
+# ---------------------------------------------------------------------------
+#  6. Animation engine
+# ---------------------------------------------------------------------------
+
+def warp_triangle(src_img, src_tri, dst_tri, dst_img):
+    r = cv2.boundingRect(np.float32([dst_tri]))
+    x, y, w, h = r
+    x2 = min(x + w, dst_img.shape[1])
+    y2 = min(y + h, dst_img.shape[0])
+    x, y = max(x, 0), max(y, 0)
+    w, h = x2 - x, y2 - y
+    if w <= 0 or h <= 0:
+        return
+    dst_local = np.float32([(p[0] - x, p[1] - y) for p in dst_tri])
+    M = cv2.getAffineTransform(np.float32(src_tri), dst_local)
+    warped = cv2.warpAffine(src_img, M, (w, h), flags=cv2.INTER_LINEAR,
+                            borderMode=cv2.BORDER_REFLECT_101)
+    mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.fillConvexPoly(mask, np.int32(dst_local), 255)
+    roi = dst_img[y:y2, x:x2]
+    m = mask[:roi.shape[0], :roi.shape[1]] > 0
+    warped = warped[:roi.shape[0], :roi.shape[1]]
+    for c in range(dst_img.shape[2]):
+        roi[:, :, c] = np.where(m, warped[:, :, c], roi[:, :, c])
+
+
+def make_motion_from_config(t, base_pts, n_kp, names, motion_cfg):
+    pts = base_pts.copy()
+    a = t * 2 * np.pi
+    for i, name in enumerate(names[:n_kp]):
+        if name in motion_cfg:
+            m = motion_cfg[name]
+            angle = a * m["freq"] + m.get("phase", 0) * 2 * np.pi
+            pts[i, 0] += m["dx"] * np.sin(angle)
+            pts[i, 1] += m["dy"] * np.sin(angle)
+    return pts
+
+
+def build_triangulation(keypoints, tw, th):
+    from scipy.spatial import Delaunay
+    names = list(keypoints.keys())
+    skel_pts = np.array(
+        [[kp[0] * tw, kp[1] * th] for kp in keypoints.values()],
+        dtype=np.float32,
+    )
+    corners = np.array([
+        [0, 0], [tw, 0], [tw, th], [0, th],
+        [tw // 2, 0], [tw, th // 2], [tw // 2, th], [0, th // 2],
+    ], dtype=np.float32)
+    ctrl_pts = np.vstack([skel_pts, corners])
+    tri = Delaunay(ctrl_pts)
+    return ctrl_pts, tri, len(skel_pts), names
+
+
+def animate_character(img_rgba, keypoints, motion_cfg, fps=15, duration=2):
+    """Генерирует список BGRA-кадров анимации."""
+    th, tw = img_rgba.shape[:2]
+    if img_rgba.shape[2] == 3:
+        img_rgba = cv2.cvtColor(img_rgba, cv2.COLOR_BGR2BGRA)
+    ctrl_pts, tri, n_kp, names = build_triangulation(keypoints, tw, th)
+    n_frames = fps * duration
+    frames = []
+    for i in range(n_frames):
+        t = i / n_frames
+        dst_pts = make_motion_from_config(t, ctrl_pts, n_kp, names, motion_cfg)
+        dst_img = np.zeros_like(img_rgba)
+        for simplex in tri.simplices:
+            warp_triangle(img_rgba, ctrl_pts[simplex].tolist(),
+                          dst_pts[simplex].tolist(), dst_img)
+        frames.append(dst_img)
+    return frames

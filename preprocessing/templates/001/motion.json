@@ -1,0 +1,44 @@
+{
+  "left_tail1": {
+    "dx": 12,
+    "dy": 20,
+    "freq": 1.0,
+    "phase": 0.0
+  },
+  "right_tail1": {
+    "dx": 12,
+    "dy": 20,
+    "freq": 1.0,
+    "phase": 0.0
+  },
+  "center_tail1": {
+    "dx": 5,
+    "dy": 0,
+    "freq": 1.0,
+    "phase": 0.0
+  },
+  "upper_fin1": {
+    "dx": 8,
+    "dy": 0,
+    "freq": 1.0,
+    "phase": 0.0
+  },
+  "lower_fin1": {
+    "dx": 8,
+    "dy": 0,
+    "freq": 1.0,
+    "phase": 0.0
+  },
+  "head": {
+    "dx": 0,
+    "dy": 8,
+    "freq": 1.0,
+    "phase": 0.0
+  },
+  "nose": {
+    "dx": 0,
+    "dy": 8,
+    "freq": 1.0,
+    "phase": 0.0
+  }
+}
