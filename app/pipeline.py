@@ -8,14 +8,24 @@ import gradio as gr
 from PIL import Image
 from scipy.spatial import Delaunay
 
-from .config import (
-    ARUCO_DICT, MARKER_IDS,
-    CANVAS_H, CANVAS_W,
-    MARKER_PX, MARGIN, CONTENT_PAD, CONTENT_SCALE,
-    FPS, DURATION,
-    BACKGROUND_PATH, BACKGROUND_VIDEO_PATH,
-    CHARS,
-)
+try:
+    from .config import (
+        ARUCO_DICT, MARKER_IDS,
+        CANVAS_H, CANVAS_W,
+        MARKER_PX, MARGIN, CONTENT_PAD, CONTENT_SCALE,
+        FPS, DURATION,
+        BACKGROUND_PATH, BACKGROUND_VIDEO_PATH,
+        CHARS,
+    )
+except ImportError:
+    from config import (
+        ARUCO_DICT, MARKER_IDS,
+        CANVAS_H, CANVAS_W,
+        MARKER_PX, MARGIN, CONTENT_PAD, CONTENT_SCALE,
+        FPS, DURATION,
+        BACKGROUND_PATH, BACKGROUND_VIDEO_PATH,
+        CHARS,
+    )
 
 # ---------------------------------------------------------------------------
 #  Camera helpers

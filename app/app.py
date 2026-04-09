@@ -3,14 +3,24 @@ import gradio as gr
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
-from .config import CHARS, DEFAULT_CHAR, ASSETS_DIR
-from .pipeline import (
-    decode_camera_photo, detect_aruco, align,
-    do_color_transfer, do_animation, do_composite,
-    auto_process,
-    _on_auto_char_change, _on_step_char_change, _render_qr_html,
-)
-from .camera import CAMERA_HEAD, make_camera_panel, CSS
+try:
+    from .config import CHARS, DEFAULT_CHAR, ASSETS_DIR
+    from .pipeline import (
+        decode_camera_photo, detect_aruco, align,
+        do_color_transfer, do_animation, do_composite,
+        auto_process,
+        _on_auto_char_change, _on_step_char_change, _render_qr_html,
+    )
+    from .camera import CAMERA_HEAD, make_camera_panel, CSS
+except ImportError:
+    from config import CHARS, DEFAULT_CHAR, ASSETS_DIR
+    from pipeline import (
+        decode_camera_photo, detect_aruco, align,
+        do_color_transfer, do_animation, do_composite,
+        auto_process,
+        _on_auto_char_change, _on_step_char_change, _render_qr_html,
+    )
+    from camera import CAMERA_HEAD, make_camera_panel, CSS
 
 # ---------------------------------------------------------------------------
 #  Gradio UI
