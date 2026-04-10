@@ -281,20 +281,28 @@ def _frames_to_gif(pil_frames):
 
 
 def _frames_to_mp4(cv_frames):
-    """Encode BGRA frames to mp4 (white background for transparency)."""
+    """Encode BGRA frames to H.264 mp4 (white background for transparency)."""
+    import imageio_ffmpeg
     tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
     tmp.close()
     h, w = cv_frames[0].shape[:2]
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(tmp.name, fourcc, FPS, (w, h))
+    writer = imageio_ffmpeg.write_frames(
+        tmp.name, (w, h), fps=FPS,
+        codec="libx264", pix_fmt_in="rgb24", pix_fmt_out="yuv420p",
+        output_params=["-crf", "23", "-preset", "fast", "-movflags", "+faststart"],
+    )
+    writer.send(None)  # init
     for frame in cv_frames:
         if frame.shape[2] == 4:
             alpha = frame[:, :, 3:4] / 255.0
-            bgr = (frame[:, :, :3] * alpha + 255 * (1 - alpha)).astype(np.uint8)
+            rgb = cv2.cvtColor(
+                (frame[:, :, :3] * alpha + 255 * (1 - alpha)).astype(np.uint8),
+                cv2.COLOR_BGR2RGB,
+            )
         else:
-            bgr = frame
-        writer.write(bgr)
-    writer.release()
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        writer.send(rgb.tobytes())
+    writer.close()
     return tmp.name
 
 

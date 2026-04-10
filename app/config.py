@@ -11,7 +11,9 @@ REPO_DIR = APP_DIR.parent
 ASSETS_DIR = APP_DIR / "assets"
 TEMPLATES_DIR = (ASSETS_DIR / "templates").resolve()
 BACKGROUND_PATH = str((TEMPLATES_DIR / "background.jpg").resolve())
-BACKGROUND_VIDEO_PATH = str((REPO_DIR / "preprocessing" / "templates" / "background.mp4").resolve())
+_bg_video_assets = TEMPLATES_DIR / "background.mp4"
+_bg_video_preproc = REPO_DIR / "preprocessing" / "templates" / "background.mp4"
+BACKGROUND_VIDEO_PATH = str(_bg_video_assets.resolve()) if _bg_video_assets.exists() else str(_bg_video_preproc.resolve())
 
 # ---------------------------------------------------------------------------
 #  Template geometry (A4 @ 150 DPI)
