@@ -399,6 +399,28 @@ CSS = """
   align-items: center;
   padding: 8px 0 4px;
 }
+.qr-center-block {
+  display: flex;
+  justify-content: center;
+  padding: 12px 0;
+}
+.qr-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 16px;
+  overflow: hidden;
+  background: #fff;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 20px;
+  height: 220px;
+  box-sizing: border-box;
+}
+.qr-card canvas {
+  max-height: 100%;
+  max-width: 100%;
+  object-fit: contain;
+}
 .qr-side-panel {
   display: flex;
   align-items: center;

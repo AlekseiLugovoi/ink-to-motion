@@ -306,12 +306,35 @@ def _frames_to_mp4(cv_frames):
     return tmp.name
 
 
+def _frames_to_webm(cv_frames):
+    """Encode BGRA frames to VP9 WebM with alpha channel."""
+    import imageio_ffmpeg, subprocess
+    tmp = tempfile.NamedTemporaryFile(suffix=".webm", delete=False)
+    tmp.close()
+    h, w = cv_frames[0].shape[:2]
+    ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    cmd = [
+        ffmpeg, "-y",
+        "-f", "rawvideo", "-pix_fmt", "bgra", "-s", f"{w}x{h}",
+        "-r", str(FPS), "-i", "pipe:0",
+        "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p",
+        "-b:v", "1M", "-auto-alt-ref", "0",
+        tmp.name,
+    ]
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for frame in cv_frames:
+        proc.stdin.write(frame.tobytes())
+    proc.stdin.close()
+    proc.wait()
+    return tmp.name
+
+
 # ---------------------------------------------------------------------------
 #  Composite on background
 # ---------------------------------------------------------------------------
 
 def _composite_html(cached_frames):
-    fish_path = _frames_to_mp4(cached_frames)
+    fish_path = _frames_to_webm(cached_frames)
     with open(fish_path, "rb") as f:
         fish_b64 = base64.b64encode(f.read()).decode()
 
@@ -332,7 +355,7 @@ def _composite_html(cached_frames):
      id="ocean">
   {background_markup}
   <video autoplay muted loop playsinline id="fish"
-       src="data:video/mp4;base64,{fish_b64}"
+       src="data:video/webm;base64,{fish_b64}"
        style="position:absolute;height:35%;
               animation:swimH 8s linear infinite, swimV 3s ease-in-out infinite, tilt 3s ease-in-out infinite;">
   </video>
@@ -406,8 +429,8 @@ def _render_qr_html(char_id):
     if not char_id or char_id not in CHARS:
         return ""
     return (
-        f'<div class="qr-center-wrap">'
-        f'  <div data-qr-char="{char_id}" style="padding:8px;"></div>'
+        f'<div class="qr-card">'
+        f'  <div data-qr-char="{char_id}"></div>'
         f'</div>'
     )
 

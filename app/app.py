@@ -46,12 +46,13 @@ with gr.Blocks(title="Ink-to-Motion") as demo:
                         show_label=False,
                     )
                     with gr.Row(equal_height=True):
-                        with gr.Column(scale=4, min_width=0):
+                        with gr.Column(scale=1, min_width=0):
                             auto_template_preview = gr.Image(
                                 value=CHARS[DEFAULT_CHAR]["template"] if DEFAULT_CHAR and CHARS[DEFAULT_CHAR].get("template") else None,
-                                show_label=False,
+                                label="Шаблон",
                                 interactive=False,
-                                height=250,
+                                height=220,
+                                elem_classes=["preset-media"],
                             )
                             auto_download_btn = gr.DownloadButton(
                                 "Скачать шаблон",
@@ -59,9 +60,10 @@ with gr.Blocks(title="Ink-to-Motion") as demo:
                                 variant="secondary",
                             )
                         with gr.Column(scale=1, min_width=0):
+                            gr.Markdown("**QR**")
                             auto_qr_container = gr.HTML(
                                 _render_qr_html(DEFAULT_CHAR),
-                                elem_classes=["qr-side-panel"],
+                                elem_classes=["qr-center-block"],
                             )
 
                 auto_char_id = gr.Textbox(
@@ -144,12 +146,15 @@ with gr.Blocks(title="Ink-to-Motion") as demo:
                             )
 
                 with gr.Accordion("Шаг 1. Шаблон и QR", open=True):
-                    gr.Markdown("Выбери шаблон, распечатай на A4, раскрась и сфотографируй.")
+                    gr.Markdown("Распечатай шаблон на A4, раскрась и сфотографируй.")
                     with gr.Row(equal_height=True):
-                        with gr.Column(scale=4, min_width=0):
+                        with gr.Column(scale=1, min_width=0):
                             template_preview = gr.Image(
                                 value=CHARS[DEFAULT_CHAR]["template"] if DEFAULT_CHAR and CHARS[DEFAULT_CHAR].get("template") else None,
-                                show_label=False, interactive=False, height=250,
+                                label="Шаблон",
+                                interactive=False,
+                                height=220,
+                                elem_classes=["preset-media"],
                             )
                             download_btn = gr.DownloadButton(
                                 "Скачать шаблон",
@@ -157,9 +162,10 @@ with gr.Blocks(title="Ink-to-Motion") as demo:
                                 variant="secondary",
                             )
                         with gr.Column(scale=1, min_width=0):
+                            gr.Markdown("**QR**")
                             qr_container = gr.HTML(
                                 _render_qr_html(DEFAULT_CHAR),
-                                elem_classes=["qr-side-panel"],
+                                elem_classes=["qr-center-block"],
                             )
 
                     char_selector.change(
