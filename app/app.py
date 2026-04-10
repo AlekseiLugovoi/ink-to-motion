@@ -4,7 +4,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 try:
-    from .config import CHARS, DEFAULT_CHAR, ASSETS_DIR
+    from .config import CHARS, DEFAULT_CHAR, ASSETS_DIR, BACKGROUND_VIDEO_PATH
     from .pipeline import (
         decode_camera_photo, detect_aruco, align,
         do_color_transfer, do_animation, do_composite,
@@ -13,7 +13,7 @@ try:
     )
     from .camera import CAMERA_HEAD, make_camera_panel, CSS
 except ImportError:
-    from config import CHARS, DEFAULT_CHAR, ASSETS_DIR
+    from config import CHARS, DEFAULT_CHAR, ASSETS_DIR, BACKGROUND_VIDEO_PATH
     from pipeline import (
         decode_camera_photo, detect_aruco, align,
         do_color_transfer, do_animation, do_composite,
@@ -76,7 +76,7 @@ with gr.Blocks(title="Ink-to-Motion") as demo:
                 )
 
                 gr.Markdown("Анимация")
-                auto_gif = gr.Image(show_label=False)
+                auto_gif = gr.Video(show_label=False, autoplay=True, loop=True)
                 gr.Markdown("Наложение на фон")
                 auto_composite = gr.HTML(
                     '<div style="min-height:200px;display:flex;align-items:center;'
@@ -199,7 +199,7 @@ with gr.Blocks(title="Ink-to-Motion") as demo:
 
                 with gr.Accordion("Шаг 5. Анимация", open=False):
                     anim_btn = gr.Button("Анимировать", variant="primary")
-                    anim_out = gr.Image(show_label=False)
+                    anim_out = gr.Video(show_label=False, autoplay=True, loop=True)
                     anim_btn.click(
                         fn=do_animation,
                         inputs=[aligned_out, char_selector],
@@ -233,5 +233,5 @@ demo.launch(
     theme=gr.themes.Soft(primary_hue="orange"),
     css=CSS,
     head=CAMERA_HEAD,
-    allowed_paths=[str(ASSETS_DIR.resolve())],
+    allowed_paths=[str(ASSETS_DIR.resolve()), os.path.dirname(BACKGROUND_VIDEO_PATH)],
 )

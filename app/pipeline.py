@@ -280,46 +280,54 @@ def _frames_to_gif(pil_frames):
     return tmp.name
 
 
+def _frames_to_mp4(cv_frames):
+    """Encode BGRA frames to mp4 (white background for transparency)."""
+    tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+    tmp.close()
+    h, w = cv_frames[0].shape[:2]
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(tmp.name, fourcc, FPS, (w, h))
+    for frame in cv_frames:
+        if frame.shape[2] == 4:
+            alpha = frame[:, :, 3:4] / 255.0
+            bgr = (frame[:, :, :3] * alpha + 255 * (1 - alpha)).astype(np.uint8)
+        else:
+            bgr = frame
+        writer.write(bgr)
+    writer.release()
+    return tmp.name
+
+
 # ---------------------------------------------------------------------------
 #  Composite on background
 # ---------------------------------------------------------------------------
 
 def _composite_html(cached_frames):
-    pil_frames = [
-        Image.fromarray(cv2.cvtColor(f, cv2.COLOR_BGRA2RGBA))
-        for f in cached_frames
-    ]
-    gif_frames = [_rgba_to_gif_frame(f) for f in pil_frames]
-    gif_buf = io.BytesIO()
-    gif_frames[0].save(
-        gif_buf, format="GIF", save_all=True, append_images=gif_frames[1:],
-        duration=1000 // FPS, loop=0, disposal=2, transparency=255,
-    )
-    gif_b64 = base64.b64encode(gif_buf.getvalue()).decode()
+    fish_path = _frames_to_mp4(cached_frames)
+    with open(fish_path, "rb") as f:
+        fish_b64 = base64.b64encode(f.read()).decode()
 
     background_markup = ""
     if os.path.exists(BACKGROUND_VIDEO_PATH):
-        with open(BACKGROUND_VIDEO_PATH, "rb") as f:
-            bg_video_b64 = base64.b64encode(f.read()).decode()
         background_markup = f"""
   <video autoplay muted loop playsinline
          style="width:100%;height:100%;object-fit:cover;display:block;">
-    <source src="data:video/mp4;base64,{bg_video_b64}" type="video/mp4">
+    <source src="/gradio_api/file={BACKGROUND_VIDEO_PATH}" type="video/mp4">
   </video>"""
     else:
-        with open(BACKGROUND_PATH, "rb") as f:
-            bg_b64 = base64.b64encode(f.read()).decode()
         background_markup = f"""
-  <img src="data:image/jpeg;base64,{bg_b64}"
+  <img src="/gradio_api/file={BACKGROUND_PATH}"
        style="width:100%;height:100%;object-fit:cover;display:block;">"""
 
     html = f"""\
 <div style="position:relative;width:100%;aspect-ratio:16/9;overflow:hidden;border-radius:12px;cursor:pointer;"
      id="ocean">
   {background_markup}
-  <img src="data:image/gif;base64,{gif_b64}" id="fish"
+  <video autoplay muted loop playsinline id="fish"
+       src="data:video/mp4;base64,{fish_b64}"
        style="position:absolute;height:35%;
               animation:swimH 8s linear infinite, swimV 3s ease-in-out infinite, tilt 3s ease-in-out infinite;">
+  </video>
 </div>
 <style>
   @keyframes swimH {{
@@ -361,7 +369,7 @@ def _composite_html(cached_frames):
 # ---------------------------------------------------------------------------
 
 def auto_process(photo, char_id):
-    """Run align -> animate -> composite. Returns (gif_path, composite_html)."""
+    """Run align -> animate -> composite. Returns (mp4_path, composite_html)."""
     if photo is None:
         return None, ""
     char = CHARS.get(char_id)
@@ -370,13 +378,9 @@ def auto_process(photo, char_id):
 
     aligned = align(photo)
     frames = _generate_frames(aligned, char)
-    pil_frames = [
-        Image.fromarray(cv2.cvtColor(f, cv2.COLOR_BGRA2RGBA))
-        for f in frames
-    ]
-    gif_path = _frames_to_gif(pil_frames)
+    mp4_path = _frames_to_mp4(frames)
     html = _composite_html(frames)
-    return gif_path, html
+    return mp4_path, html
 
 
 # ---------------------------------------------------------------------------
@@ -449,12 +453,8 @@ def do_animation(aligned_img, char_id):
     if not char:
         raise gr.Error("Персонаж не найден.")
     frames = _generate_frames(aligned_img, char)
-    pil_frames = [
-        Image.fromarray(cv2.cvtColor(f, cv2.COLOR_BGRA2RGBA))
-        for f in frames
-    ]
-    gif_path = _frames_to_gif(pil_frames)
-    return gif_path, frames
+    mp4_path = _frames_to_mp4(frames)
+    return mp4_path, frames
 
 
 def do_composite(cached_frames):
