@@ -395,7 +395,7 @@ def extract_colored(aligned_img, meta=None, white_thresh=230):
 
 
 def correct_photo(aligned_img, image_rect, meta=None,
-                   white_target=200, gain_range=(0.9, 1.2)):
+                   white_target=240, gain_range=(0.9, 1.3)):
     """White balance + brightness коррекция по белизне бумаги.
 
     Логика: бумага = поля вокруг персонажа (между drawing_bbox и image_rect).

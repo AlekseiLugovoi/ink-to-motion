@@ -119,6 +119,26 @@ def compute_image_rect(svg_path):
     return [bx + (bw - tw) // 2, by + (bh - th) // 2, tw, th]
 
 
+def _correct_photo(aligned_bgr, image_rect, white_target=240, gain_range=(0.9, 1.3)):
+    """White balance correction using paper margins as reference."""
+    ix, iy, iw, ih = image_rect
+    inner = MARGIN + MARKER_PX + CONTENT_PAD
+    bx, by = inner, inner
+    bw, bh = CANVAS_W - 2 * inner, CANVAS_H - 2 * inner
+
+    strips = []
+    if iy > by:       strips.append(aligned_bgr[by:iy, bx:bx+bw])
+    if iy+ih < by+bh: strips.append(aligned_bgr[iy+ih:by+bh, bx:bx+bw])
+    if ix > bx:       strips.append(aligned_bgr[by:by+bh, bx:ix])
+    if ix+iw < bx+bw: strips.append(aligned_bgr[by:by+bh, ix+iw:bx+bw])
+
+    paper_pixels = np.vstack([s.reshape(-1, 3) for s in strips if s.size > 0])
+    paper_ref = np.median(paper_pixels, axis=0)
+    gain = np.clip(white_target / (paper_ref + 1e-6), *gain_range)
+
+    return np.clip(aligned_bgr.astype(np.float32) * gain[np.newaxis, np.newaxis, :], 0, 255).astype(np.uint8)
+
+
 _SVG_COLOR_MAP = {
     "#00ff00": (0, 255, 0), "#00FF00": (0, 255, 0),
     "black": (0, 0, 0), "#000000": (0, 0, 0), "#000": (0, 0, 0),
@@ -208,6 +228,7 @@ def transfer_color_app(aligned_pil, char):
     ix, iy, iw, ih = image_rect
 
     aligned_bgr = cv2.cvtColor(np.array(aligned_pil), cv2.COLOR_RGB2BGR)
+    aligned_bgr = _correct_photo(aligned_bgr, image_rect)
     photo_crop = aligned_bgr[iy : iy + ih, ix : ix + iw]
 
     tree = ET.parse(str(svg_path))
