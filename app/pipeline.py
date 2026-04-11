@@ -7,6 +7,7 @@ import numpy as np
 import gradio as gr
 from PIL import Image
 from scipy.spatial import Delaunay
+from xml.etree import ElementTree as ET
 
 try:
     from .config import (
@@ -104,65 +105,142 @@ def align(image):
 #  Color transfer (by mask)
 # ---------------------------------------------------------------------------
 
-def compute_image_rect(img_path):
-    original = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
-    ih, iw = original.shape[:2]
+def compute_image_rect(svg_path):
+    """Compute image_rect from SVG dimensions + template geometry."""
+    tree = ET.parse(str(svg_path))
+    root = tree.getroot()
+    svg_w = float(root.get("width"))
+    svg_h = float(root.get("height"))
     inner = MARGIN + MARKER_PX + CONTENT_PAD
     bx, by = inner, inner
     bw, bh = CANVAS_W - 2 * inner, CANVAS_H - 2 * inner
-    scale = min(bw / iw, bh / ih) * CONTENT_SCALE
-    tw, th = int(iw * scale), int(ih * scale)
+    scale = min(bw / svg_w, bh / svg_h) * CONTENT_SCALE
+    tw, th = int(svg_w * scale), int(svg_h * scale)
     return [bx + (bw - tw) // 2, by + (bh - th) // 2, tw, th]
 
 
-def transfer_color_app(aligned_pil, char):
-    """Transfer colors from aligned photo onto character using mask.
-    Green (0,255,0) in mask = fill zone from photo.
-    Transparent = discard (background).
-    Everything else = keep from original.
+_SVG_COLOR_MAP = {
+    "#00ff00": (0, 255, 0), "#00FF00": (0, 255, 0),
+    "black": (0, 0, 0), "#000000": (0, 0, 0), "#000": (0, 0, 0),
+    "white": (255, 255, 255), "#ffffff": (255, 255, 255), "#FFFFFF": (255, 255, 255),
+}
+
+
+def _svg_parse_paths(svg_path, sx, sy, pts_per_seg=30):
+    """Parse SVG paths into ordered draw operations (painter's algorithm).
+
+    Returns list of (polygon_pts, fill_bgr, stroke_bgr, thickness).
     """
-    image_rect = compute_image_rect(char["drawing"])
+    from svgpathtools import parse_path
+
+    tree = ET.parse(str(svg_path))
+    root = tree.getroot()
+    ns = "http://www.w3.org/2000/svg"
+
+    ops = []
+    for path_el in root.iter(f"{{{ns}}}path"):
+        d = (path_el.get("d") or "").strip()
+        if not d:
+            continue
+        fill_bgr = _SVG_COLOR_MAP.get((path_el.get("fill") or "none").strip())
+        stroke_bgr = _SVG_COLOR_MAP.get((path_el.get("stroke") or "none").strip())
+
+        path_obj = parse_path(d)
+        subpaths, current = [], []
+        for seg in path_obj:
+            start = (seg.start.real * sx, seg.start.imag * sy)
+            if current:
+                last = current[-1]
+                if (start[0] - last[0]) ** 2 + (start[1] - last[1]) ** 2 > 4:
+                    if len(current) >= 3:
+                        subpaths.append(np.array(current, dtype=np.int32))
+                    current = []
+            if not current:
+                current.append(start)
+            for i in range(1, pts_per_seg + 1):
+                pt = seg.point(i / pts_per_seg)
+                current.append((pt.real * sx, pt.imag * sy))
+        if len(current) >= 3:
+            subpaths.append(np.array(current, dtype=np.int32))
+
+        for pts in subpaths:
+            ops.append((pts, fill_bgr, stroke_bgr, 1))
+    return ops
+
+
+def _render_svg_polygons(svg_path, tw, th):
+    """Render SVG character using polygons. Returns BGRA numpy array."""
+    tree = ET.parse(str(svg_path))
+    root = tree.getroot()
+    svg_w = float(root.get("width"))
+    svg_h = float(root.get("height"))
+
+    ops = _svg_parse_paths(svg_path, tw / svg_w, th / svg_h)
+    green_bgr = (0, 255, 0)
+
+    result = np.full((th, tw, 3), 255, dtype=np.uint8)
+    alpha = np.zeros((th, tw), dtype=np.uint8)
+
+    for pts, fill_bgr, _, _ in ops:
+        if fill_bgr == green_bgr:
+            cv2.fillPoly(alpha, [pts], 255)
+        elif fill_bgr:
+            cv2.fillPoly(result, [pts], fill_bgr)
+            cv2.fillPoly(alpha, [pts], 255)
+    for pts, _, stroke_bgr, thickness in ops:
+        if stroke_bgr:
+            cv2.polylines(result, [pts], False, stroke_bgr, thickness, cv2.LINE_AA)
+            cv2.polylines(alpha, [pts], False, 255, thickness, cv2.LINE_AA)
+
+    return cv2.merge([*cv2.split(result), alpha])
+
+
+def transfer_color_app(aligned_pil, char):
+    """Transfer colors from photo onto SVG character using polygon approach.
+
+    SVG paths -> cv2.fillPoly/polylines. Painter's algorithm:
+    1. Green fills -> photo color zone
+    2. Non-green fills -> overlay (eye, pupil, etc.)
+    3. Strokes -> contours on top
+    """
+    svg_path = char["svg"]
+    image_rect = compute_image_rect(svg_path)
     ix, iy, iw, ih = image_rect
 
     aligned_bgr = cv2.cvtColor(np.array(aligned_pil), cv2.COLOR_RGB2BGR)
     photo_crop = aligned_bgr[iy : iy + ih, ix : ix + iw]
 
-    original = cv2.imread(char["drawing"], cv2.IMREAD_UNCHANGED)
-    original = cv2.resize(original, (iw, ih), interpolation=cv2.INTER_AREA)
+    tree = ET.parse(str(svg_path))
+    root = tree.getroot()
+    svg_w = float(root.get("width"))
+    svg_h = float(root.get("height"))
 
-    mask_img = cv2.imread(char["mask"], cv2.IMREAD_UNCHANGED)
-    mask_img = cv2.resize(mask_img, (iw, ih), interpolation=cv2.INTER_NEAREST)
+    ops = _svg_parse_paths(svg_path, iw / svg_w, ih / svg_h)
+    green_bgr = (0, 255, 0)
 
-    if mask_img.shape[2] == 4:
-        is_fill = (
-            (mask_img[:, :, 0] == 0)
-            & (mask_img[:, :, 1] == 255)
-            & (mask_img[:, :, 2] == 0)
-            & (mask_img[:, :, 3] > 0)
-        )
-        final_alpha = mask_img[:, :, 3].copy()
-    else:
-        is_fill = (
-            (mask_img[:, :, 0] == 0)
-            & (mask_img[:, :, 1] == 255)
-            & (mask_img[:, :, 2] == 0)
-        )
-        final_alpha = (mask_img.mean(axis=2) < 250).astype(np.uint8) * 255
+    fill_mask = np.zeros((ih, iw), dtype=np.uint8)
+    for pts, fill_bgr, _, _ in ops:
+        if fill_bgr == green_bgr:
+            cv2.fillPoly(fill_mask, [pts], 255)
 
-    clean = cv2.fastNlMeansDenoisingColored(photo_crop, None, 8, 8, 7, 21)
-    lab = cv2.cvtColor(clean, cv2.COLOR_BGR2LAB)
-    L, A, B = cv2.split(lab)
-    A = cv2.GaussianBlur(A, (0, 0), 3.0)
-    B = cv2.GaussianBlur(B, (0, 0), 3.0)
-    clean = cv2.cvtColor(cv2.merge([L, A, B]), cv2.COLOR_LAB2BGR)
+    kernel = np.ones((7, 7), np.uint8)
+    fill_expanded = cv2.dilate(fill_mask, kernel, iterations=1)
 
-    if original.shape[2] == 4:
-        a_ch = original[:, :, 3:4] / 255.0
-        result = (original[:, :, :3] * a_ch + 255 * (1 - a_ch)).astype(np.uint8)
-    else:
-        result = original.copy()
+    result = np.full((ih, iw, 3), 255, dtype=np.uint8)
+    result[fill_expanded > 0] = photo_crop[fill_expanded > 0]
 
-    result[is_fill] = clean[is_fill]
+    final_alpha = np.zeros((ih, iw), dtype=np.uint8)
+    final_alpha[fill_expanded > 0] = 255
+
+    for pts, fill_bgr, _, _ in ops:
+        if fill_bgr and fill_bgr != green_bgr:
+            cv2.fillPoly(result, [pts], fill_bgr)
+            cv2.fillPoly(final_alpha, [pts], 255)
+    for pts, _, stroke_bgr, thickness in ops:
+        if stroke_bgr:
+            cv2.polylines(result, [pts], False, stroke_bgr, thickness, cv2.LINE_AA)
+            cv2.polylines(final_alpha, [pts], False, 255, thickness, cv2.LINE_AA)
+
     rgba = cv2.merge([*cv2.split(result), final_alpha])
     return {"rgba": rgba, "image_rect": image_rect}
 
@@ -243,7 +321,7 @@ def _generate_frames(aligned_img, char):
     for i in range(n_frames):
         t = i / n_frames
         dst_pts = make_motion_from_config(t, ctrl_pts, n_kp, names, motion_cfg)
-        dst_img = np.zeros_like(rgba)
+        dst_img = rgba.copy()
         for simplex in tri.simplices:
             warp_triangle(
                 rgba, ctrl_pts[simplex].tolist(),
@@ -343,7 +421,7 @@ def _composite_html(cached_frames):
         background_markup = f"""
   <video autoplay muted loop playsinline
          style="width:100%;height:100%;object-fit:cover;display:block;">
-    <source src="/gradio_api/file={BACKGROUND_VIDEO_PATH}" type="video/mp4">
+    <source src="/gradio_api/file={BACKGROUND_VIDEO_PATH}">
   </video>"""
     else:
         background_markup = f"""
@@ -418,13 +496,6 @@ def auto_process(photo, char_id):
 #  Step-by-step handlers
 # ---------------------------------------------------------------------------
 
-def on_select_char(char_id):
-    char = CHARS.get(char_id)
-    if not char:
-        return None, None
-    return char.get("template"), char.get("preview")
-
-
 def _render_qr_html(char_id):
     if not char_id or char_id not in CHARS:
         return ""
@@ -435,16 +506,44 @@ def _render_qr_html(char_id):
     )
 
 
-def _character_preset_values(char_id):
-    char = CHARS.get(char_id)
-    if not char:
-        return None, None, None, None
-    return (
-        char.get("drawing"),
-        char.get("mask"),
-        char.get("skeleton_png"),
-        char.get("preview"),
-    )
+def _render_preview_with_skeleton(char):
+    """Render SVG with skeleton keypoints overlay -> PIL Image."""
+    svg_path = char["svg"]
+    image_rect = compute_image_rect(svg_path)
+    _, _, tw, th = image_rect
+
+    img = _render_svg_polygons(svg_path, tw, th)
+    for name, (nx, ny) in char["skeleton"]["keypoints"].items():
+        x, y = int(nx * tw), int(ny * th)
+        cv2.circle(img, (x, y), 5, (0, 0, 255, 255), -1)
+        cv2.circle(img, (x, y), 5, (255, 255, 255, 255), 2)
+        cv2.putText(img, name, (x + 8, y - 5),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 180, 0, 255), 1)
+    return Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGRA2RGBA))
+
+
+def _generate_animation_preview(char):
+    """Generate animation from original SVG (no photo) -> mp4 path."""
+    svg_path = char["svg"]
+    image_rect = compute_image_rect(svg_path)
+    _, _, tw, th = image_rect
+
+    img_rgba = _render_svg_polygons(svg_path, tw, th)
+    keypoints = char["skeleton"]["keypoints"]
+    motion_cfg = char["motion"]
+    ctrl_pts, tri, n_kp, names = build_triangulation(keypoints, tw, th)
+
+    n_frames = FPS * DURATION
+    frames = []
+    for i in range(n_frames):
+        t = i / n_frames
+        dst_pts = make_motion_from_config(t, ctrl_pts, n_kp, names, motion_cfg)
+        dst_img = img_rgba.copy()
+        for simplex in tri.simplices:
+            warp_triangle(img_rgba, ctrl_pts[simplex].tolist(),
+                          dst_pts[simplex].tolist(), dst_img)
+        frames.append(dst_img)
+    return _frames_to_mp4(frames)
 
 
 def _on_auto_char_change(char_id):
@@ -460,10 +559,11 @@ def _on_auto_char_change(char_id):
 def _on_step_char_change(char_id):
     char = CHARS.get(char_id)
     if not char:
-        return None, None, None, None, None, None, ""
+        return None, None, None, None, ""
+    preview_img = _render_preview_with_skeleton(char)
+    anim_path = _generate_animation_preview(char)
     template = char.get("template")
-    drawing, mask, skeleton_png, preview = _character_preset_values(char_id)
-    return drawing, mask, skeleton_png, preview, template, template, _render_qr_html(char_id)
+    return preview_img, anim_path, template, template, _render_qr_html(char_id)
 
 
 def do_color_transfer(aligned_img, char_id):

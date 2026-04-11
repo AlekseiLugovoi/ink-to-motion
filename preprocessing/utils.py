@@ -1,8 +1,61 @@
+import io
 import cv2
 import numpy as np
 from pathlib import Path
+from lxml import etree
+from PIL import Image as PILImage
 
 ARUCO_DICT = cv2.aruco.DICT_4X4_50
+
+
+# ---------------------------------------------------------------------------
+#  SVG → PNG
+# ---------------------------------------------------------------------------
+
+def render_svg(svg_path, remove_clip=True, scale=1, green_to_white=False):
+    """Render SVG to RGBA numpy array.
+
+    scale: render at Nx resolution (e.g. scale=3 → 3x bigger PNG).
+    green_to_white: replace #00FF00 fills with white (for template overlay).
+    """
+    from svglib.svglib import svg2rlg
+    from reportlab.graphics import renderPM
+
+    tree = etree.parse(svg_path)
+    root = tree.getroot()
+
+    needs_tmp = remove_clip or green_to_white
+
+    if remove_clip:
+        for g in root.iter("{http://www.w3.org/2000/svg}g"):
+            if g.get("clip-path"):
+                del g.attrib["clip-path"]
+        for defs in root.findall("{http://www.w3.org/2000/svg}defs"):
+            defs.getparent().remove(defs)
+
+    if green_to_white:
+        for p in root.iter("{http://www.w3.org/2000/svg}path"):
+            if (p.get("fill") or "").upper() == "#00FF00":
+                p.set("fill", "white")
+
+    if needs_tmp:
+        tmp = str(Path(svg_path).with_suffix(".tmp.svg"))
+        tree.write(tmp, xml_declaration=True)
+        drawing = svg2rlg(tmp)
+        Path(tmp).unlink()
+    else:
+        drawing = svg2rlg(svg_path)
+
+    if scale != 1:
+        drawing.width *= scale
+        drawing.height *= scale
+        drawing.scale(scale, scale)
+
+    buf = io.BytesIO()
+    renderPM.drawToFile(drawing, buf, fmt="PNG")
+    return np.array(PILImage.open(buf).convert("RGBA"))
+
+
 MARKER_IDS = [0, 1, 2, 3]  # TL, TR, BR, BL
 
 
@@ -182,42 +235,56 @@ def generate_template(
 #  2. Overlay character onto template
 # ---------------------------------------------------------------------------
 
-def overlay_character(template_path, img_path, output_path=None, content_scale=1.0,
-                      canvas_size=(1240, 1754), marker_px=80, margin=60, content_pad=10):
-    """Place a character image onto a template inside the drawing area.
+def image_rect_from_svg(svg_path, content_scale=1.0,
+                        canvas_size=(1240, 1754), marker_px=80, margin=60, content_pad=10):
+    """Вычислить image_rect из размеров SVG + геометрии шаблона.
 
-    Returns the composite image and image_rect (position/size of the character).
+    Возвращает [x0, y0, w, h] — координаты персонажа на шаблоне.
+    Не требует PNG-файлов.
+    """
+    tree = etree.parse(str(svg_path))
+    root = tree.getroot()
+    svg_w = float(root.get("width"))
+    svg_h = float(root.get("height"))
+
+    meta = template_meta(canvas_size, marker_px, margin, content_pad)
+    bx, by, bw, bh = meta["drawing_bbox"]
+
+    scale = min(bw / svg_w, bh / svg_h) * content_scale
+    tw, th = int(svg_w * scale), int(svg_h * scale)
+    x0 = bx + (bw - tw) // 2
+    y0 = by + (bh - th) // 2
+    return [x0, y0, tw, th]
+
+
+def overlay_character(template_path, svg_path, output_path=None, content_scale=1.0,
+                      canvas_size=(1240, 1754), marker_px=80, margin=60, content_pad=10):
+    """Наложить персонажа (из SVG) на шаблон.
+
+    Рендерит SVG (зелёное→белое) и альфа-композитит на template.
+    Возвращает composite image и image_rect.
     """
     template = cv2.imread(str(template_path))
     if template is None:
         raise FileNotFoundError(f"Cannot read template: {template_path}")
 
-    img = cv2.imread(str(img_path), cv2.IMREAD_UNCHANGED)
-    if img is None:
-        raise FileNotFoundError(f"Cannot read image: {img_path}")
+    img = cv2.cvtColor(
+        render_svg(svg_path, green_to_white=True), cv2.COLOR_RGBA2BGRA
+    )
 
-    meta = template_meta(canvas_size, marker_px, margin, content_pad)
-    bx, by, bw, bh = meta["drawing_bbox"]
-
-    ih, iw = img.shape[:2]
-    scale = min(bw / iw, bh / ih) * content_scale
-    tw, th = int(iw * scale), int(ih * scale)
+    image_rect = image_rect_from_svg(
+        svg_path, content_scale, canvas_size, marker_px, margin, content_pad
+    )
+    x0, y0, tw, th = image_rect
     resized = cv2.resize(img, (tw, th), interpolation=cv2.INTER_AREA)
 
-    x0 = bx + (bw - tw) // 2
-    y0 = by + (bh - th) // 2
-    image_rect = [x0, y0, tw, th]
-
     canvas = template.copy()
-    if resized.shape[2] == 4:
-        alpha = resized[:, :, 3] / 255.0
-        for c in range(3):
-            canvas[y0 : y0 + th, x0 : x0 + tw, c] = (
-                resized[:, :, c] * alpha
-                + canvas[y0 : y0 + th, x0 : x0 + tw, c] * (1 - alpha)
-            ).astype(np.uint8)
-    else:
-        canvas[y0 : y0 + th, x0 : x0 + tw] = resized
+    alpha = resized[:, :, 3] / 255.0
+    for c in range(3):
+        canvas[y0 : y0 + th, x0 : x0 + tw, c] = (
+            resized[:, :, c] * alpha
+            + canvas[y0 : y0 + th, x0 : x0 + tw, c] * (1 - alpha)
+        ).astype(np.uint8)
 
     if output_path:
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -327,56 +394,156 @@ def extract_colored(aligned_img, meta=None, white_thresh=230):
     return {"rgba": rgba, "crop": crop, "mask": mask}
 
 
-def transfer_color(aligned_img, original_path, mask_path, image_rect,
-                    denoise=True, smooth_color=True):
-    """Перенос цвета с фото на оригинал через цветовую маску.
-    Зеленый (0,255,0) в маске — зона для заливки.
-    Прозрачное — фон. Все остальное (черный/белый) — остается из оригинала.
+def correct_photo(aligned_img, image_rect, meta=None,
+                   white_target=200, gain_range=(0.9, 1.2)):
+    """White balance + brightness коррекция по белизне бумаги.
+
+    Логика: бумага = поля вокруг персонажа (между drawing_bbox и image_rect).
+    Это 100% белый листок. Усредняем его цвет на фото,
+    вычисляем поканальный gain = white_target / paper_median.
+    Например бумага [177, 181, 181] → gain [1.13, 1.10, 1.10].
+
+    white_target: целевая яркость бумаги (200 = чуть теплее, 240 = ярче).
+    gain_range: (min, max) ограничения на gain, защита от пересвета/недосвета.
+    """
+    if meta is None:
+        meta = template_meta()
+
+    ix, iy, iw, ih = image_rect
+    bx, by, bw, bh = meta["drawing_bbox"]
+
+    # Бумага = поля вокруг персонажа внутри drawing_bbox
+    strips = []
+    if iy > by:       strips.append(aligned_img[by:iy, bx:bx+bw])
+    if iy+ih < by+bh: strips.append(aligned_img[iy+ih:by+bh, bx:bx+bw])
+    if ix > bx:       strips.append(aligned_img[by:by+bh, bx:ix])
+    if ix+iw < bx+bw: strips.append(aligned_img[by:by+bh, ix+iw:bx+bw])
+
+    paper_pixels = np.vstack([s.reshape(-1, 3) for s in strips if s.size > 0])
+    # Медиана устойчивее к выбросам (штриховка, тени маркеров)
+    paper_ref = np.median(paper_pixels, axis=0)
+    gain = np.clip(white_target / (paper_ref + 1e-6), *gain_range)
+
+    corrected = (aligned_img.astype(np.float32) * gain[np.newaxis, np.newaxis, :])
+    result = np.clip(corrected, 0, 255).astype(np.uint8)
+
+    info = {"paper_bgr": paper_ref, "gain_bgr": gain}
+    return result, info
+
+
+def _svg_parse_paths(svg_path, sx, sy, pts_per_seg=30):
+    """Парсим SVG path'ы → упорядоченный список операций рисования.
+
+    Каждая операция: (subpath_pts, fill_color, stroke_color, stroke_width)
+    fill_color/stroke_color = BGR tuple или None.
+    Порядок = порядок в SVG (painter's algorithm).
+    """
+    from svgpathtools import parse_path
+
+    tree = etree.parse(str(svg_path))
+    root = tree.getroot()
+
+    COLOR_MAP = {
+        "#00ff00": (0, 255, 0), "#00FF00": (0, 255, 0),
+        "black": (0, 0, 0), "#000000": (0, 0, 0), "#000": (0, 0, 0),
+        "white": (255, 255, 255), "#ffffff": (255, 255, 255), "#FFFFFF": (255, 255, 255),
+    }
+
+    ops = []
+    for path_el in root.iter("{http://www.w3.org/2000/svg}path"):
+        d = path_el.get("d", "").strip()
+        if not d:
+            continue
+
+        fill_str = (path_el.get("fill") or "none").strip()
+        stroke_str = (path_el.get("stroke") or "none").strip()
+        stroke_w = float(path_el.get("stroke-width") or "1")
+
+        fill_bgr = COLOR_MAP.get(fill_str)
+        stroke_bgr = COLOR_MAP.get(stroke_str)
+
+        path_obj = parse_path(d)
+
+        # Разбиваем на субпути (по разрывам)
+        subpaths = []
+        current = []
+        for seg in path_obj:
+            start = (seg.start.real * sx, seg.start.imag * sy)
+            if current:
+                last = current[-1]
+                if ((start[0] - last[0])**2 + (start[1] - last[1])**2) > 4:
+                    if len(current) >= 3:
+                        subpaths.append(np.array(current, dtype=np.int32))
+                    current = []
+            if not current:
+                current.append(start)
+            for i in range(1, pts_per_seg + 1):
+                pt = seg.point(i / pts_per_seg)
+                current.append((pt.real * sx, pt.imag * sy))
+        if len(current) >= 3:
+            subpaths.append(np.array(current, dtype=np.int32))
+
+        thickness = 1
+        for pts in subpaths:
+            ops.append((pts, fill_bgr, stroke_bgr, thickness))
+
+    return ops
+
+
+def transfer_color(aligned_img, svg_path, image_rect):
+    """Перенос цвета с фото на оригинал — напрямую из SVG.
+
+    SVG path'ы → полигоны → cv2.fillPoly/polylines.
+    Никакой растеризации PNG — идеальные границы при любом разрешении.
+
+    Painter's algorithm (порядок SVG):
+    1. Зелёные fill → зона заливки цветом с фото
+    2. Белые/чёрные fill → рисуем поверх (глаз, зрачок и пр.)
+    3. Stroke → контуры поверх всего
     """
     ix, iy, iw, ih = image_rect
     photo_crop = aligned_img[iy : iy + ih, ix : ix + iw]
 
-    # Загружаем оригинал и ресайзим
-    original = cv2.imread(str(original_path), cv2.IMREAD_UNCHANGED)
-    if original is None: raise FileNotFoundError(f"Cannot read: {original_path}")
-    original = cv2.resize(original, (iw, ih), interpolation=cv2.INTER_AREA)
+    tree = etree.parse(str(svg_path))
+    root = tree.getroot()
+    svg_w = float(root.get("width"))
+    svg_h = float(root.get("height"))
+    sx, sy = iw / svg_w, ih / svg_h
 
-    # Загружаем маску со всеми каналами
-    mask_img = cv2.imread(str(mask_path), cv2.IMREAD_UNCHANGED)
-    if mask_img is None: raise FileNotFoundError(f"Cannot read: {mask_path}")
-    mask_img = cv2.resize(mask_img, (iw, ih), interpolation=cv2.INTER_NEAREST)
+    ops = _svg_parse_paths(svg_path, sx, sy)
 
-    # Определяем зону заливки: зеленый (B=0, G=255, R=0) и не прозрачно
-    if mask_img.shape[2] == 4:
-        is_fill = (mask_img[:,:,0] == 0) & (mask_img[:,:,1] == 255) & (mask_img[:,:,2] == 0) & (mask_img[:,:,3] > 0)
-        final_alpha = mask_img[:, :, 3].copy()
-    else:
-        is_fill = (mask_img[:,:,0] == 0) & (mask_img[:,:,1] == 255) & (mask_img[:,:,2] == 0)
-        final_alpha = (mask_img.mean(axis=2) < 250).astype(np.uint8) * 255
+    # 1. Маска заливки (зелёное) — полигоны, идеальные границы
+    green_bgr = (0, 255, 0)
+    fill_mask = np.zeros((ih, iw), dtype=np.uint8)
+    for pts, fill_bgr, _, _ in ops:
+        if fill_bgr == green_bgr:
+            cv2.fillPoly(fill_mask, [pts], 255)
 
-    # Подготовка цветов с фото (шумоподавление и сглаживание)
-    clean = photo_crop
-    if denoise:
-        clean = cv2.fastNlMeansDenoisingColored(clean, None, 8, 8, 7, 21)
-    if smooth_color:
-        lab = cv2.cvtColor(clean, cv2.COLOR_BGR2LAB)
-        L, A, B = cv2.split(lab)
-        A = cv2.GaussianBlur(A, (0, 0), 3.0)
-        B = cv2.GaussianBlur(B, (0, 0), 3.0)
-        clean = cv2.cvtColor(cv2.merge([L, A, B]), cv2.COLOR_LAB2BGR)
+    kernel = np.ones((7, 7), np.uint8)
+    fill_expanded = cv2.dilate(fill_mask, kernel, iterations=1)
 
-    # За основу берем оригинал (чтобы сохранить контуры и свет)
-    if original.shape[2] == 4:
-        a_ch = original[:, :, 3:4] / 255.0
-        result = (original[:, :, :3] * a_ch + 255 * (1 - a_ch)).astype(np.uint8)
-    else:
-        result = original.copy()
+    # 2. Сборка в порядке SVG (painter's algorithm)
+    result = np.full((ih, iw, 3), 255, dtype=np.uint8)
+    result[fill_expanded > 0] = photo_crop[fill_expanded > 0]
 
-    # Заполняем только "зеленую" область цветами с фото
-    result[is_fill] = clean[is_fill]
-    
+    # Альфа по расширенной зоне
+    final_alpha = np.zeros((ih, iw), dtype=np.uint8)
+    final_alpha[fill_expanded > 0] = 255
+
+    # Не-зелёные fills поверх (глаз, зрачок)
+    for pts, fill_bgr, _, _ in ops:
+        if fill_bgr and fill_bgr != green_bgr:
+            cv2.fillPoly(result, [pts], fill_bgr)
+            cv2.fillPoly(final_alpha, [pts], 255)
+
+    # Контуры поверх всего
+    for pts, _, stroke_bgr, thickness in ops:
+        if stroke_bgr:
+            cv2.polylines(result, [pts], False, stroke_bgr, thickness, cv2.LINE_AA)
+            cv2.polylines(final_alpha, [pts], False, 255, thickness, cv2.LINE_AA)
+
     rgba = cv2.merge([*cv2.split(result), final_alpha])
-    return {"rgba": rgba, "result": result, "is_fill": is_fill}
+    return {"rgba": rgba, "result": result, "is_fill": fill_mask > 0}
 
 
 # ---------------------------------------------------------------------------
@@ -573,6 +740,20 @@ def make_motion_from_config(t, base_pts, n_kp, names, motion_cfg):
     return pts
 
 
+def draw_triangulation(img, ctrl_pts, tri, n_kp, names):
+    """Draw triangulation mesh + keypoint labels over image. Returns RGBA."""
+    vis = cv2.cvtColor(img, cv2.COLOR_BGRA2RGBA) if img.shape[2] == 4 else img.copy()
+    for simplex in tri.simplices:
+        pts = ctrl_pts[simplex].astype(np.int32)
+        cv2.polylines(vis, [pts], True, (200, 100, 0, 255), 1)
+    for pt, name in zip(ctrl_pts[:n_kp], names):
+        x, y = pt.astype(int)
+        cv2.circle(vis, (x, y), 5, (0, 0, 255, 255), -1)
+        cv2.putText(vis, name, (x + 8, y - 5),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 180, 0, 255), 1)
+    return vis
+
+
 def build_triangulation(keypoints, tw, th):
     from scipy.spatial import Delaunay
     names = list(keypoints.keys())
@@ -600,7 +781,7 @@ def animate_character(img_rgba, keypoints, motion_cfg, fps=15, duration=2):
     for i in range(n_frames):
         t = i / n_frames
         dst_pts = make_motion_from_config(t, ctrl_pts, n_kp, names, motion_cfg)
-        dst_img = np.zeros_like(img_rgba)
+        dst_img = img_rgba.copy()
         for simplex in tri.simplices:
             warp_triangle(img_rgba, ctrl_pts[simplex].tolist(),
                           dst_pts[simplex].tolist(), dst_img)

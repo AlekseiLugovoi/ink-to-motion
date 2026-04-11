@@ -10,6 +10,7 @@ try:
         do_color_transfer, do_animation, do_composite,
         auto_process,
         _on_auto_char_change, _on_step_char_change, _render_qr_html,
+        _render_preview_with_skeleton, _generate_animation_preview,
     )
     from .camera import CAMERA_HEAD, make_camera_panel, CSS
 except ImportError:
@@ -19,8 +20,18 @@ except ImportError:
         do_color_transfer, do_animation, do_composite,
         auto_process,
         _on_auto_char_change, _on_step_char_change, _render_qr_html,
+        _render_preview_with_skeleton, _generate_animation_preview,
     )
     from camera import CAMERA_HEAD, make_camera_panel, CSS
+
+# ---------------------------------------------------------------------------
+#  Initial values for default character
+# ---------------------------------------------------------------------------
+
+_default_char = CHARS.get(DEFAULT_CHAR) if DEFAULT_CHAR else None
+_default_template = _default_char.get("template") if _default_char else None
+_default_preview = _render_preview_with_skeleton(_default_char) if _default_char else None
+_default_anim = _generate_animation_preview(_default_char) if _default_char else None
 
 # ---------------------------------------------------------------------------
 #  Gradio UI
@@ -38,33 +49,28 @@ with gr.Blocks(title="Ink-to-Motion") as demo:
                 gr.Markdown("Выбери персонажа, отсканируй QR или загрузи фото.")
 
                 with gr.Accordion("Шаг 1. Шаблон и QR", open=True):
-                    gr.Markdown("Выбери персонажа, отсканируй QR и запусти весь флоу.")
                     auto_char_selector = gr.Dropdown(
                         choices=char_choices,
                         value=DEFAULT_CHAR,
                         label="Персонаж",
                         show_label=False,
                     )
-                    with gr.Row(equal_height=True):
-                        with gr.Column(scale=1, min_width=0):
-                            auto_template_preview = gr.Image(
-                                value=CHARS[DEFAULT_CHAR]["template"] if DEFAULT_CHAR and CHARS[DEFAULT_CHAR].get("template") else None,
-                                label="Шаблон",
-                                interactive=False,
-                                height=220,
-                                elem_classes=["preset-media"],
-                            )
-                            auto_download_btn = gr.DownloadButton(
-                                "Скачать шаблон",
-                                value=CHARS[DEFAULT_CHAR]["template"] if DEFAULT_CHAR and CHARS[DEFAULT_CHAR].get("template") else None,
-                                variant="secondary",
-                            )
-                        with gr.Column(scale=1, min_width=0):
-                            gr.Markdown("**QR**")
-                            auto_qr_container = gr.HTML(
-                                _render_qr_html(DEFAULT_CHAR),
-                                elem_classes=["qr-center-block"],
-                            )
+                    auto_template_preview = gr.Image(
+                        value=_default_template,
+                        label="Шаблон",
+                        interactive=False,
+                        height=220,
+                        elem_classes=["preset-media"],
+                    )
+                    auto_download_btn = gr.DownloadButton(
+                        "Скачать шаблон",
+                        value=_default_template,
+                        variant="secondary",
+                    )
+                    auto_qr_container = gr.HTML(
+                        _render_qr_html(DEFAULT_CHAR),
+                        elem_classes=["qr-center-block"],
+                    )
 
                 auto_char_id = gr.Textbox(
                     value=DEFAULT_CHAR or "", elem_id="auto-char-id", container=False,
@@ -84,7 +90,7 @@ with gr.Blocks(title="Ink-to-Motion") as demo:
                     '<div style="min-height:200px;display:flex;align-items:center;'
                     'justify-content:center;color:#9ca3af;border:1px dashed #d1d5db;'
                     'border-radius:12px;background:#f8fafc;">'
-                    '<span style="font-size:40px;opacity:0.4;">🎬</span></div>'
+                    '<span style="font-size:40px;opacity:0.4;">&#127916;</span></div>'
                 )
 
                 auto_char_selector.change(
@@ -103,79 +109,58 @@ with gr.Blocks(title="Ink-to-Motion") as demo:
             with gr.Column(elem_id="main-wrap"):
 
                 with gr.Accordion("Шаг 0. Выбери персонажа", open=True):
-                    gr.Markdown("Выбери персонажа и проверь его пресеты: исходник, маску, скелет и анимацию.")
                     char_selector = gr.Dropdown(
                         choices=char_choices,
                         value=DEFAULT_CHAR,
                         label="Персонаж",
                         show_label=False,
                     )
-                    with gr.Row(equal_height=True):
-                        with gr.Column(scale=1, min_width=0):
-                            preset_img = gr.Image(
-                                value=CHARS[DEFAULT_CHAR]["drawing"] if DEFAULT_CHAR and CHARS[DEFAULT_CHAR].get("drawing") else None,
-                                label="img.png",
-                                interactive=False,
-                                height=220,
-                                elem_classes=["preset-media"],
-                            )
-                        with gr.Column(scale=1, min_width=0):
-                            preset_mask = gr.Image(
-                                value=CHARS[DEFAULT_CHAR]["mask"] if DEFAULT_CHAR and CHARS[DEFAULT_CHAR].get("mask") else None,
-                                label="mask.png",
-                                interactive=False,
-                                height=220,
-                                elem_classes=["preset-media"],
-                            )
-                    with gr.Row(equal_height=True):
-                        with gr.Column(scale=1, min_width=0):
-                            preset_skeleton = gr.Image(
-                                value=CHARS[DEFAULT_CHAR]["skeleton_png"] if DEFAULT_CHAR and CHARS[DEFAULT_CHAR].get("skeleton_png") else None,
-                                label="skeleton.png",
-                                interactive=False,
-                                height=220,
-                                elem_classes=["preset-media"],
-                            )
-                        with gr.Column(scale=1, min_width=0):
-                            preset_preview = gr.Image(
-                                value=CHARS[DEFAULT_CHAR]["preview"] if DEFAULT_CHAR and CHARS[DEFAULT_CHAR].get("preview") else None,
-                                label="preview.gif",
-                                interactive=False,
-                                height=220,
-                                elem_classes=["preset-media"],
-                            )
+                    with gr.Accordion("Превью", open=False):
+                        with gr.Row(equal_height=True):
+                            with gr.Column(scale=1, min_width=0):
+                                preset_preview = gr.Image(
+                                    value=_default_preview,
+                                    label="Скелет",
+                                    interactive=False,
+                                    height=250,
+                                    elem_classes=["preset-media"],
+                                )
+                            with gr.Column(scale=1, min_width=0):
+                                preset_anim = gr.Video(
+                                    value=_default_anim,
+                                    label="Анимация",
+                                    autoplay=True,
+                                    loop=True,
+                                    height=250,
+                                )
 
                 with gr.Accordion("Шаг 1. Шаблон и QR", open=True):
                     gr.Markdown("Распечатай шаблон на A4, раскрась и сфотографируй.")
-                    with gr.Row(equal_height=True):
-                        with gr.Column(scale=1, min_width=0):
-                            template_preview = gr.Image(
-                                value=CHARS[DEFAULT_CHAR]["template"] if DEFAULT_CHAR and CHARS[DEFAULT_CHAR].get("template") else None,
-                                label="Шаблон",
-                                interactive=False,
-                                height=220,
-                                elem_classes=["preset-media"],
-                            )
-                            download_btn = gr.DownloadButton(
-                                "Скачать шаблон",
-                                value=CHARS[DEFAULT_CHAR]["template"] if DEFAULT_CHAR and CHARS[DEFAULT_CHAR].get("template") else None,
-                                variant="secondary",
-                            )
-                        with gr.Column(scale=1, min_width=0):
-                            gr.Markdown("**QR**")
-                            qr_container = gr.HTML(
-                                _render_qr_html(DEFAULT_CHAR),
-                                elem_classes=["qr-center-block"],
-                            )
-
-                    char_selector.change(
-                        fn=_on_step_char_change,
-                        inputs=char_selector,
-                        outputs=[
-                            preset_img, preset_mask, preset_skeleton, preset_preview,
-                            template_preview, download_btn, qr_container,
-                        ],
+                    template_preview = gr.Image(
+                        value=_default_template,
+                        label="Шаблон",
+                        interactive=False,
+                        height=220,
+                        elem_classes=["preset-media"],
                     )
+                    download_btn = gr.DownloadButton(
+                        "Скачать шаблон",
+                        value=_default_template,
+                        variant="secondary",
+                    )
+                    qr_container = gr.HTML(
+                        _render_qr_html(DEFAULT_CHAR),
+                        elem_classes=["qr-center-block"],
+                    )
+
+                char_selector.change(
+                    fn=_on_step_char_change,
+                    inputs=char_selector,
+                    outputs=[
+                        preset_preview, preset_anim,
+                        template_preview, download_btn, qr_container,
+                    ],
+                )
 
                 with gr.Accordion("Шаг 2. Сфотографируй рисунок", open=False):
                     gr.Markdown("Покажи, что получилось.")

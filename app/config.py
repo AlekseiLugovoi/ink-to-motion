@@ -11,8 +11,8 @@ REPO_DIR = APP_DIR.parent
 ASSETS_DIR = APP_DIR / "assets"
 TEMPLATES_DIR = (ASSETS_DIR / "templates").resolve()
 BACKGROUND_PATH = str((TEMPLATES_DIR / "background.jpg").resolve())
-_bg_video_assets = TEMPLATES_DIR / "background.mp4"
-_bg_video_preproc = REPO_DIR / "preprocessing" / "templates" / "background.mp4"
+_bg_video_assets = TEMPLATES_DIR / "background.mov"
+_bg_video_preproc = REPO_DIR / "preprocessing" / "templates" / "background.mov"
 BACKGROUND_VIDEO_PATH = str(_bg_video_assets.resolve()) if _bg_video_assets.exists() else str(_bg_video_preproc.resolve())
 
 # ---------------------------------------------------------------------------
@@ -34,7 +34,7 @@ DURATION = 2
 
 # ---------------------------------------------------------------------------
 #  Auto-discover characters
-#  Each char dir must have: img.png, mask.png, skeleton.json, motion.json
+#  Each char dir must have: mask.svg, skeleton.json, motion.json
 # ---------------------------------------------------------------------------
 
 CHARS = {}
@@ -42,20 +42,17 @@ for _char_dir in sorted(TEMPLATES_DIR.iterdir()):
     if not _char_dir.is_dir():
         continue
     _char_id = _char_dir.name
-    _required = ["img.png", "mask.png", "skeleton.json", "motion.json"]
+    _required = ["mask.svg", "skeleton.json", "motion.json"]
     if all((_char_dir / f).exists() for f in _required):
         with open(_char_dir / "skeleton.json", encoding="utf-8") as _f:
             _skel = json.load(_f)
         with open(_char_dir / "motion.json", encoding="utf-8") as _f:
             _motion = json.load(_f)
         CHARS[_char_id] = {
-            "drawing": str((_char_dir / "img.png").resolve()),
-            "mask": str((_char_dir / "mask.png").resolve()),
+            "svg": str((_char_dir / "mask.svg").resolve()),
             "skeleton": _skel,
-            "skeleton_png": str((_char_dir / "skeleton.png").resolve()) if (_char_dir / "skeleton.png").exists() else None,
             "motion": _motion,
             "template": str((_char_dir / "template.png").resolve()) if (_char_dir / "template.png").exists() else None,
-            "preview": str((_char_dir / "preview.gif").resolve()) if (_char_dir / "preview.gif").exists() else None,
         }
 
 DEFAULT_CHAR = list(CHARS.keys())[0] if CHARS else None
