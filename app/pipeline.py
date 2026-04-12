@@ -209,8 +209,8 @@ def _render_svg_polygons(svg_path, tw, th):
             cv2.fillPoly(alpha, [pts], 255)
     for pts, _, stroke_bgr, thickness in ops:
         if stroke_bgr:
-            cv2.polylines(result, [pts], False, stroke_bgr, thickness, cv2.LINE_AA)
-            cv2.polylines(alpha, [pts], False, 255, thickness, cv2.LINE_AA)
+            cv2.polylines(result, [pts], False, stroke_bgr, thickness)
+            cv2.polylines(alpha, [pts], False, 255, thickness)
 
     return cv2.merge([*cv2.split(result), alpha])
 
@@ -239,28 +239,26 @@ def transfer_color_app(aligned_pil, char):
     ops = _svg_parse_paths(svg_path, iw / svg_w, ih / svg_h)
     green_bgr = (0, 255, 0)
 
+    result = photo_crop.copy()
+    final_alpha = np.zeros((ih, iw), dtype=np.uint8)
     fill_mask = np.zeros((ih, iw), dtype=np.uint8)
+
     for pts, fill_bgr, _, _ in ops:
         if fill_bgr == green_bgr:
+            cv2.fillPoly(final_alpha, [pts], 255)
             cv2.fillPoly(fill_mask, [pts], 255)
-
-    kernel = np.ones((7, 7), np.uint8)
-    fill_expanded = cv2.dilate(fill_mask, kernel, iterations=1)
-
-    result = np.full((ih, iw, 3), 255, dtype=np.uint8)
-    result[fill_expanded > 0] = photo_crop[fill_expanded > 0]
-
-    final_alpha = np.zeros((ih, iw), dtype=np.uint8)
-    final_alpha[fill_expanded > 0] = 255
-
-    for pts, fill_bgr, _, _ in ops:
-        if fill_bgr and fill_bgr != green_bgr:
+        elif fill_bgr:
             cv2.fillPoly(result, [pts], fill_bgr)
             cv2.fillPoly(final_alpha, [pts], 255)
+
+    mask = fill_mask > 0
     for pts, _, stroke_bgr, thickness in ops:
         if stroke_bgr:
-            cv2.polylines(result, [pts], False, stroke_bgr, thickness, cv2.LINE_AA)
-            cv2.polylines(final_alpha, [pts], False, 255, thickness, cv2.LINE_AA)
+            cv2.polylines(result, [pts], False, stroke_bgr, thickness)
+            cv2.polylines(final_alpha, [pts], False, 255, thickness)
+
+    # Закрыть 1px дырки между полигонами (close = dilate + erode)
+    final_alpha = cv2.morphologyEx(final_alpha, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
 
     rgba = cv2.merge([*cv2.split(result), final_alpha])
     return {"rgba": rgba, "image_rect": image_rect}
@@ -291,12 +289,31 @@ def build_triangulation(keypoints, tw, th):
 def make_motion_from_config(t, base_pts, n_kp, names, motion_cfg):
     pts = base_pts.copy()
     a = t * 2 * np.pi
+    name_to_idx = {n: i for i, n in enumerate(names[:n_kp])}
+
     for i, name in enumerate(names[:n_kp]):
         if name in motion_cfg:
             m = motion_cfg[name]
-            angle = a * m["freq"] + m.get("phase", 0) * 2 * np.pi
-            pts[i, 0] += m["dx"] * np.sin(angle)
-            pts[i, 1] += m["dy"] * np.sin(angle)
+            w = a * m.get("freq", 1.0) + m.get("phase", 0) * 2 * np.pi
+            pts[i, 0] += m.get("dx", 0) * np.sin(w)
+            pts[i, 1] += m.get("dy", 0) * np.sin(w)
+
+    for i, name in enumerate(names[:n_kp]):
+        if name in motion_cfg:
+            m = motion_cfg[name]
+            max_deg = m.get("angle", 0)
+            pivot = m.get("pivot")
+            if not max_deg or not pivot or pivot not in name_to_idx:
+                continue
+            pi = name_to_idx[pivot]
+            w = a * m.get("freq", 1.0) + m.get("phase", 0) * 2 * np.pi
+            bias = m.get("bias", 0.0)
+            theta = np.radians(max_deg) * (np.sin(w) + bias)
+            ox = base_pts[i, 0] - base_pts[pi, 0]
+            oy = base_pts[i, 1] - base_pts[pi, 1]
+            cos_t, sin_t = np.cos(theta), np.sin(theta)
+            pts[i, 0] = pts[pi, 0] + ox * cos_t - oy * sin_t
+            pts[i, 1] = pts[pi, 1] + ox * sin_t + oy * cos_t
     return pts
 
 
@@ -342,7 +359,7 @@ def _generate_frames(aligned_img, char):
     for i in range(n_frames):
         t = i / n_frames
         dst_pts = make_motion_from_config(t, ctrl_pts, n_kp, names, motion_cfg)
-        dst_img = rgba.copy()
+        dst_img = np.zeros_like(rgba)
         for simplex in tri.simplices:
             warp_triangle(
                 rgba, ctrl_pts[simplex].tolist(),
@@ -455,7 +472,7 @@ def _composite_html(cached_frames):
   {background_markup}
   <video autoplay muted loop playsinline id="fish"
        src="data:video/webm;base64,{fish_b64}"
-       style="position:absolute;height:35%;
+       style="position:absolute;height:35%;background:transparent;
               animation:swimH 8s linear infinite, swimV 3s ease-in-out infinite, tilt 3s ease-in-out infinite;">
   </video>
 </div>
@@ -559,7 +576,7 @@ def _generate_animation_preview(char):
     for i in range(n_frames):
         t = i / n_frames
         dst_pts = make_motion_from_config(t, ctrl_pts, n_kp, names, motion_cfg)
-        dst_img = img_rgba.copy()
+        dst_img = np.zeros_like(img_rgba)
         for simplex in tri.simplices:
             warp_triangle(img_rgba, ctrl_pts[simplex].tolist(),
                           dst_pts[simplex].tolist(), dst_img)

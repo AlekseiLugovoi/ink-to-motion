@@ -483,9 +483,8 @@ def _svg_parse_paths(svg_path, sx, sy, pts_per_seg=30):
         if len(current) >= 3:
             subpaths.append(np.array(current, dtype=np.int32))
 
-        thickness = 1
         for pts in subpaths:
-            ops.append((pts, fill_bgr, stroke_bgr, thickness))
+            ops.append((pts, fill_bgr, stroke_bgr, 1))
 
     return ops
 
@@ -512,38 +511,34 @@ def transfer_color(aligned_img, svg_path, image_rect):
 
     ops = _svg_parse_paths(svg_path, sx, sy)
 
-    # 1. Маска заливки (зелёное) — полигоны, идеальные границы
+    # Сборка в порядке SVG (painter's algorithm)
     green_bgr = (0, 255, 0)
+    result = photo_crop.copy()
+    final_alpha = np.zeros((ih, iw), dtype=np.uint8)
     fill_mask = np.zeros((ih, iw), dtype=np.uint8)
+
+    # Зелёные полигоны → альфа (RGB уже из фото)
     for pts, fill_bgr, _, _ in ops:
         if fill_bgr == green_bgr:
+            cv2.fillPoly(final_alpha, [pts], 255)
             cv2.fillPoly(fill_mask, [pts], 255)
-
-    kernel = np.ones((7, 7), np.uint8)
-    fill_expanded = cv2.dilate(fill_mask, kernel, iterations=1)
-
-    # 2. Сборка в порядке SVG (painter's algorithm)
-    result = np.full((ih, iw, 3), 255, dtype=np.uint8)
-    result[fill_expanded > 0] = photo_crop[fill_expanded > 0]
-
-    # Альфа по расширенной зоне
-    final_alpha = np.zeros((ih, iw), dtype=np.uint8)
-    final_alpha[fill_expanded > 0] = 255
-
-    # Не-зелёные fills поверх (глаз, зрачок)
-    for pts, fill_bgr, _, _ in ops:
-        if fill_bgr and fill_bgr != green_bgr:
+        elif fill_bgr:
             cv2.fillPoly(result, [pts], fill_bgr)
             cv2.fillPoly(final_alpha, [pts], 255)
+
+    mask = fill_mask > 0
 
     # Контуры поверх всего
     for pts, _, stroke_bgr, thickness in ops:
         if stroke_bgr:
-            cv2.polylines(result, [pts], False, stroke_bgr, thickness, cv2.LINE_AA)
-            cv2.polylines(final_alpha, [pts], False, 255, thickness, cv2.LINE_AA)
+            cv2.polylines(result, [pts], False, stroke_bgr, thickness)
+            cv2.polylines(final_alpha, [pts], False, 255, thickness)
+
+    # Закрыть 1px дырки между полигонами (close = dilate + erode)
+    final_alpha = cv2.morphologyEx(final_alpha, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
 
     rgba = cv2.merge([*cv2.split(result), final_alpha])
-    return {"rgba": rgba, "result": result, "is_fill": fill_mask > 0}
+    return {"rgba": rgba, "result": result, "is_fill": mask}
 
 
 # ---------------------------------------------------------------------------
@@ -718,7 +713,7 @@ def warp_triangle(src_img, src_tri, dst_tri, dst_img):
     dst_local = np.float32([(p[0] - x, p[1] - y) for p in dst_tri])
     M = cv2.getAffineTransform(np.float32(src_tri), dst_local)
     warped = cv2.warpAffine(src_img, M, (w, h), flags=cv2.INTER_LINEAR,
-                            borderMode=cv2.BORDER_REFLECT_101)
+                            borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0, 0))
     mask = np.zeros((h, w), dtype=np.uint8)
     cv2.fillConvexPoly(mask, np.int32(dst_local), 255)
     roi = dst_img[y:y2, x:x2]
@@ -731,12 +726,33 @@ def warp_triangle(src_img, src_tri, dst_tri, dst_img):
 def make_motion_from_config(t, base_pts, n_kp, names, motion_cfg):
     pts = base_pts.copy()
     a = t * 2 * np.pi
+    name_to_idx = {n: i for i, n in enumerate(names[:n_kp])}
+
+    # 1) Трансляция (dx/dy)
     for i, name in enumerate(names[:n_kp]):
         if name in motion_cfg:
             m = motion_cfg[name]
-            angle = a * m["freq"] + m.get("phase", 0) * 2 * np.pi
-            pts[i, 0] += m["dx"] * np.sin(angle)
-            pts[i, 1] += m["dy"] * np.sin(angle)
+            w = a * m.get("freq", 1.0) + m.get("phase", 0) * 2 * np.pi
+            pts[i, 0] += m.get("dx", 0) * np.sin(w)
+            pts[i, 1] += m.get("dy", 0) * np.sin(w)
+
+    # 2) Вращение вокруг pivot (angle в градусах)
+    for i, name in enumerate(names[:n_kp]):
+        if name in motion_cfg:
+            m = motion_cfg[name]
+            max_deg = m.get("angle", 0)
+            pivot = m.get("pivot")
+            if not max_deg or not pivot or pivot not in name_to_idx:
+                continue
+            pi = name_to_idx[pivot]
+            w = a * m.get("freq", 1.0) + m.get("phase", 0) * 2 * np.pi
+            bias = m.get("bias", 0.0)
+            theta = np.radians(max_deg) * (np.sin(w) + bias)
+            ox = base_pts[i, 0] - base_pts[pi, 0]
+            oy = base_pts[i, 1] - base_pts[pi, 1]
+            cos_t, sin_t = np.cos(theta), np.sin(theta)
+            pts[i, 0] = pts[pi, 0] + ox * cos_t - oy * sin_t
+            pts[i, 1] = pts[pi, 1] + ox * sin_t + oy * cos_t
     return pts
 
 
@@ -754,34 +770,52 @@ def draw_triangulation(img, ctrl_pts, tri, n_kp, names):
     return vis
 
 
-def build_triangulation(keypoints, tw, th):
+def build_triangulation(keypoints, tw, th, margin=0):
     from scipy.spatial import Delaunay
     names = list(keypoints.keys())
     skel_pts = np.array(
         [[kp[0] * tw, kp[1] * th] for kp in keypoints.values()],
         dtype=np.float32,
     )
+    m = margin
     corners = np.array([
-        [0, 0], [tw, 0], [tw, th], [0, th],
-        [tw // 2, 0], [tw, th // 2], [tw // 2, th], [0, th // 2],
+        [-m, -m], [tw + m, -m], [tw + m, th + m], [-m, th + m],
+        [tw // 2, -m], [tw + m, th // 2], [tw // 2, th + m], [-m, th // 2],
     ], dtype=np.float32)
     ctrl_pts = np.vstack([skel_pts, corners])
     tri = Delaunay(ctrl_pts)
     return ctrl_pts, tri, len(skel_pts), names
 
 
-def animate_character(img_rgba, keypoints, motion_cfg, fps=15, duration=2):
-    """Генерирует список BGRA-кадров анимации."""
-    th, tw = img_rgba.shape[:2]
+def animate_character(img_rgba, keypoints, motion_cfg, fps=30, duration=3,
+                      pad=(0, 0, 0, 0)):
+    """Генерирует список BGRA-кадров анимации.
+
+    pad = (top, bottom, left, right) — прозрачные поля для свободы движения.
+    """
     if img_rgba.shape[2] == 3:
         img_rgba = cv2.cvtColor(img_rgba, cv2.COLOR_BGR2BGRA)
+
+    pt, pb, pl, pr = pad
+    if any(p > 0 for p in pad):
+        oh, ow = img_rgba.shape[:2]
+        img_rgba = cv2.copyMakeBorder(
+            img_rgba, pt, pb, pl, pr,
+            cv2.BORDER_CONSTANT, value=(0, 0, 0, 0))
+        nh, nw = img_rgba.shape[:2]
+        keypoints = {
+            name: [(x * ow + pl) / nw, (y * oh + pt) / nh]
+            for name, (x, y) in keypoints.items()
+        }
+
+    th, tw = img_rgba.shape[:2]
     ctrl_pts, tri, n_kp, names = build_triangulation(keypoints, tw, th)
     n_frames = fps * duration
     frames = []
     for i in range(n_frames):
         t = i / n_frames
         dst_pts = make_motion_from_config(t, ctrl_pts, n_kp, names, motion_cfg)
-        dst_img = img_rgba.copy()
+        dst_img = np.zeros_like(img_rgba)
         for simplex in tri.simplices:
             warp_triangle(img_rgba, ctrl_pts[simplex].tolist(),
                           dst_pts[simplex].tolist(), dst_img)
