@@ -364,7 +364,7 @@ def _composite_html(cached_frames, swim_cfg=None):
         kf_lines.append(f"    {t*100:.1f}%{{left:{lv:.1f}%;top:{tv:.1f}%;}}")
     swimpath_css = "\n".join(kf_lines)
 
-    flip_css = "scaleX(-1) " if flip else ""
+    flip_css = " scaleX(-1)" if flip else ""
 
     background_markup = ""
     if os.path.exists(BACKGROUND_VIDEO_PATH):
@@ -393,10 +393,10 @@ def _composite_html(cached_frames, swim_cfg=None):
 {swimpath_css}
   }}
   @keyframes tilt {{
-    0% {{ transform:translate(-50%,-50%) {flip_css}rotate({rot}deg); }}
-    25% {{ transform:translate(-50%,-50%) {flip_css}rotate({rot + tilt_amp}deg); }}
-    75% {{ transform:translate(-50%,-50%) {flip_css}rotate({rot - tilt_amp}deg); }}
-    100% {{ transform:translate(-50%,-50%) {flip_css}rotate({rot}deg); }}
+    0% {{ transform:translate(-50%,-50%) rotate({-rot}deg){flip_css}; }}
+    25% {{ transform:translate(-50%,-50%) rotate({-(rot + tilt_amp)}deg){flip_css}; }}
+    75% {{ transform:translate(-50%,-50%) rotate({-(rot - tilt_amp)}deg){flip_css}; }}
+    100% {{ transform:translate(-50%,-50%) rotate({-rot}deg){flip_css}; }}
   }}
 </style>
 <script>
