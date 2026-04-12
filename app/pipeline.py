@@ -445,12 +445,33 @@ def _frames_to_webm(cv_frames):
     return tmp.name
 
 
+def _frames_to_apng(cv_frames, max_h=300):
+    """Encode BGRA frames to APNG (animated PNG) with full alpha support."""
+    h, w = cv_frames[0].shape[:2]
+    scale = min(1.0, max_h / h)
+    pil_frames = []
+    for f in cv_frames:
+        rgba = cv2.cvtColor(f, cv2.COLOR_BGRA2RGBA)
+        img = Image.fromarray(rgba)
+        if scale < 1.0:
+            img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+        pil_frames.append(img)
+    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+    tmp.close()
+    pil_frames[0].save(
+        tmp.name, format="PNG", save_all=True,
+        append_images=pil_frames[1:],
+        duration=1000 // FPS, loop=0,
+    )
+    return tmp.name
+
+
 # ---------------------------------------------------------------------------
 #  Composite on background
 # ---------------------------------------------------------------------------
 
 def _composite_html(cached_frames):
-    fish_path = _frames_to_webm(cached_frames)
+    fish_path = _frames_to_apng(cached_frames)
     with open(fish_path, "rb") as f:
         fish_b64 = base64.b64encode(f.read()).decode()
 
@@ -470,11 +491,10 @@ def _composite_html(cached_frames):
 <div style="position:relative;width:100%;aspect-ratio:16/9;overflow:hidden;border-radius:12px;cursor:pointer;"
      id="ocean">
   {background_markup}
-  <video autoplay muted loop playsinline id="fish"
-       src="data:video/webm;base64,{fish_b64}"
-       style="position:absolute;height:35%;background:transparent;
+  <img id="fish"
+       src="data:image/png;base64,{fish_b64}"
+       style="position:absolute;height:35%;
               animation:swimH 8s linear infinite, swimV 3s ease-in-out infinite, tilt 3s ease-in-out infinite;">
-  </video>
 </div>
 <style>
   @keyframes swimH {{

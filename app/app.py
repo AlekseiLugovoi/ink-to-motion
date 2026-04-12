@@ -208,6 +208,21 @@ with gr.Blocks(title="Ink-to-Motion") as demo:
                         outputs=[composite_out, composite_file],
                     )
 
+    # --- Read ?char= from URL on load (fixes QR routing to wrong character) ---
+    def _on_url_load(request: gr.Request):
+        char_id = request.query_params.get("char", DEFAULT_CHAR)
+        if char_id not in CHARS:
+            char_id = DEFAULT_CHAR
+        char = CHARS[char_id]
+        template = char.get("template")
+        return char_id, char_id, template, template, _render_qr_html(char_id)
+
+    demo.load(
+        fn=_on_url_load,
+        outputs=[auto_char_selector, auto_char_id,
+                 auto_template_preview, auto_download_btn, auto_qr_container],
+    )
+
 # ---------------------------------------------------------------------------
 #  FastAPI endpoint for ArUco detection
 # ---------------------------------------------------------------------------
