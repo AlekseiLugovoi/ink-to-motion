@@ -1,10 +1,8 @@
 import io
 import os
-import sys
 import base64
 import random
 import tempfile
-from pathlib import Path
 import cv2
 import numpy as np
 import gradio as gr
@@ -20,6 +18,7 @@ try:
         BACKGROUND_PATH, BACKGROUND_VIDEO_PATH,
         CHARS,
     )
+    from .arap import animate_arap as _animate_arap
 except ImportError:
     from config import (
         ARUCO_DICT, MARKER_IDS,
@@ -29,12 +28,7 @@ except ImportError:
         BACKGROUND_PATH, BACKGROUND_VIDEO_PATH,
         CHARS,
     )
-
-# Import ARAP animation from preprocessing
-_PREPROC_DIR = str(Path(__file__).resolve().parent.parent / "preprocessing")
-if _PREPROC_DIR not in sys.path:
-    sys.path.insert(0, _PREPROC_DIR)
-from utils import animate_arap as _animate_arap
+    from arap import animate_arap as _animate_arap
 
 # ---------------------------------------------------------------------------
 #  Camera helpers
@@ -249,17 +243,14 @@ def transfer_color_app(aligned_pil, char):
 
     result = photo_crop.copy()
     final_alpha = np.zeros((ih, iw), dtype=np.uint8)
-    fill_mask = np.zeros((ih, iw), dtype=np.uint8)
 
     for pts, fill_bgr, _, _ in ops:
         if fill_bgr == green_bgr:
             cv2.fillPoly(final_alpha, [pts], 255)
-            cv2.fillPoly(fill_mask, [pts], 255)
         elif fill_bgr:
             cv2.fillPoly(result, [pts], fill_bgr)
             cv2.fillPoly(final_alpha, [pts], 255)
 
-    mask = fill_mask > 0
     for pts, _, stroke_bgr, thickness in ops:
         if stroke_bgr:
             cv2.polylines(result, [pts], False, stroke_bgr, thickness)
@@ -282,31 +273,8 @@ def _generate_frames(aligned_img, char):
 
 
 # ---------------------------------------------------------------------------
-#  GIF helpers
+#  Video encoding
 # ---------------------------------------------------------------------------
-
-def _rgba_to_gif_frame(frame_rgba):
-    alpha = np.array(frame_rgba.split()[3]) < 128
-    frame_p = frame_rgba.convert("RGB").quantize(colors=255)
-    palette = frame_p.getpalette()
-    palette[255 * 3 : 255 * 3 + 3] = [0, 0, 0]
-    indices = np.array(frame_p, dtype=np.uint8)
-    indices[alpha] = 255
-    result = Image.fromarray(indices, mode="P")
-    result.putpalette(palette)
-    result.info["transparency"] = 255
-    return result
-
-
-def _frames_to_gif(pil_frames):
-    gif_frames = [_rgba_to_gif_frame(f) for f in pil_frames]
-    tmp = tempfile.NamedTemporaryFile(suffix=".gif", delete=False)
-    gif_frames[0].save(
-        tmp.name, save_all=True, append_images=gif_frames[1:],
-        duration=1000 // FPS, loop=0, disposal=2, transparency=255,
-    )
-    return tmp.name
-
 
 def _frames_to_mp4(cv_frames):
     """Encode BGRA frames to H.264 mp4 (white background for transparency)."""
@@ -331,29 +299,6 @@ def _frames_to_mp4(cv_frames):
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         writer.send(rgb.tobytes())
     writer.close()
-    return tmp.name
-
-
-def _frames_to_webm(cv_frames):
-    """Encode BGRA frames to VP9 WebM with alpha channel."""
-    import imageio_ffmpeg, subprocess
-    tmp = tempfile.NamedTemporaryFile(suffix=".webm", delete=False)
-    tmp.close()
-    h, w = cv_frames[0].shape[:2]
-    ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
-    cmd = [
-        ffmpeg, "-y",
-        "-f", "rawvideo", "-pix_fmt", "bgra", "-s", f"{w}x{h}",
-        "-r", str(FPS), "-i", "pipe:0",
-        "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p",
-        "-b:v", "1M", "-auto-alt-ref", "0",
-        tmp.name,
-    ]
-    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    for frame in cv_frames:
-        proc.stdin.write(frame.tobytes())
-    proc.stdin.close()
-    proc.wait()
     return tmp.name
 
 
