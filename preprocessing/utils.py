@@ -51,9 +51,32 @@ def render_svg(svg_path, remove_clip=True, scale=1, green_to_white=False):
         drawing.height *= scale
         drawing.scale(scale, scale)
 
-    buf = io.BytesIO()
-    renderPM.drawToFile(drawing, buf, fmt="PNG")
-    return np.array(PILImage.open(buf).convert("RGBA"))
+    # Рендер на белом фоне
+    buf_w = io.BytesIO()
+    renderPM.drawToFile(drawing, buf_w, fmt="PNG", bg=0xFFFFFF)
+    img_w = np.array(PILImage.open(buf_w).convert("RGB"), dtype=np.float64)
+
+    # Рендер на чёрном фоне
+    buf_b = io.BytesIO()
+    renderPM.drawToFile(drawing, buf_b, fmt="PNG", bg=0x000000)
+    img_b = np.array(PILImage.open(buf_b).convert("RGB"), dtype=np.float64)
+
+    # alpha = разница (где фон — пиксели отличаются, где персонаж — одинаковые)
+    # На белом: pixel = fg * a + 255 * (1-a)
+    # На чёрном: pixel = fg * a
+    # Разница: img_w - img_b = 255 * (1-a)  =>  a = 1 - (img_w - img_b) / 255
+    diff = (img_w - img_b).max(axis=2)
+    alpha = np.clip(255 - diff, 0, 255).astype(np.uint8)
+
+    # Восстанавливаем цвет: fg = img_b / a (где a > 0)
+    a_f = alpha.astype(np.float64) / 255.0
+    rgb = np.zeros_like(img_b)
+    mask = a_f > 0.01
+    for c in range(3):
+        rgb[:, :, c] = np.where(mask, np.clip(img_b[:, :, c] / (a_f + 1e-10), 0, 255), 0)
+
+    img = np.dstack([rgb.astype(np.uint8), alpha])
+    return img
 
 
 MARKER_IDS = [0, 1, 2, 3]  # TL, TR, BR, BL
@@ -821,3 +844,271 @@ def animate_character(img_rgba, keypoints, motion_cfg, fps=30, duration=3,
                           dst_pts[simplex].tolist(), dst_img)
         frames.append(dst_img)
     return frames
+
+
+# ---------------------------------------------------------------------------
+#  ARAP (As-Rigid-As-Possible) деформация
+# ---------------------------------------------------------------------------
+
+def build_arap_mesh(keypoints, tw, th, alpha_mask, grid_step=40):
+    """Строит плотный меш: keypoints + внутренняя сетка + граничные якоря.
+
+    Returns: V0, tri, n_kp, n_int, kp_names, h_idx
+    """
+    from scipy.spatial import Delaunay, cKDTree
+
+    kp_names = list(keypoints.keys())
+    kp_pts = np.array([[v[0] * tw, v[1] * th] for v in keypoints.values()],
+                      dtype=np.float64)
+    n_kp = len(kp_pts)
+
+    interior = []
+    for y in range(grid_step // 2, th, grid_step):
+        for x in range(grid_step // 2, tw, grid_step):
+            if alpha_mask[y, x] > 128:
+                interior.append([float(x), float(y)])
+    interior = np.array(interior, dtype=np.float64) if interior else np.empty((0, 2))
+
+    corners = np.array([[0, 0], [tw, 0], [tw, th], [0, th],
+                        [tw/2, 0], [tw, th/2], [tw/2, th], [0, th/2]],
+                       dtype=np.float64)
+    n_corners = len(corners)
+
+    if len(interior):
+        dists, _ = cKDTree(np.vstack([kp_pts, corners])).query(interior)
+        interior = interior[dists > grid_step * 0.6]
+    n_int = len(interior)
+
+    V0 = np.vstack([kp_pts, interior, corners])
+    tri = Delaunay(V0)
+    h_idx = list(range(n_kp)) + list(range(n_kp + n_int, len(V0)))
+
+    return V0, tri, n_kp, n_int, kp_names, h_idx
+
+
+def draw_arap_mesh(img_bgra, V0, tri, n_kp, kp_names, n_int):
+    """Визуализация ARAP-меша поверх изображения. Возвращает RGBA."""
+    vis = cv2.cvtColor(img_bgra, cv2.COLOR_BGRA2RGBA)
+    for s in tri.simplices:
+        cv2.polylines(vis, [V0[s].astype(np.int32)], True, (200, 100, 0, 180), 1)
+    for i in range(n_kp):
+        x, y = int(V0[i, 0]), int(V0[i, 1])
+        cv2.circle(vis, (x, y), 6, (255, 0, 0, 255), -1)
+        cv2.circle(vis, (x, y), 6, (255, 255, 255, 255), 2)
+        cv2.putText(vis, kp_names[i], (x + 8, y - 5),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 180, 0, 255), 1)
+    for i in range(n_kp, n_kp + n_int):
+        x, y = int(V0[i, 0]), int(V0[i, 1])
+        cv2.circle(vis, (x, y), 3, (0, 200, 0, 200), -1)
+    return vis
+
+
+def precompute_arap(V0, tri, h_idx):
+    """Предвычисление ARAP: веса, Лапласиан, факторизация, рёбра.
+
+    Returns: solve_fn, E_i, E_j, E_w, E_orig, h_set
+    """
+    from scipy.sparse import lil_matrix
+    from scipy.sparse.linalg import factorized
+
+    N = len(V0)
+    Wsp = lil_matrix((N, N))
+    for s in tri.simplices:
+        for k in range(3):
+            i, j, o = int(s[k]), int(s[(k+1) % 3]), int(s[(k+2) % 3])
+            ei, ej = V0[i] - V0[o], V0[j] - V0[o]
+            cross = abs(ei[0] * ej[1] - ei[1] * ej[0])
+            cot = np.clip(np.dot(ei, ej) / (cross + 1e-8), 0.01, 100.0)
+            Wsp[i, j] += 0.5 * cot
+            Wsp[j, i] += 0.5 * cot
+    Wsp = Wsp.tocsr()
+
+    L = lil_matrix((N, N))
+    for i in range(N):
+        row = Wsp[i]
+        L[i, i] = row.sum()
+        for j in row.indices:
+            L[i, int(j)] -= row[0, int(j)]
+    for h in h_idx:
+        L[h, :] = 0
+        L[h, h] = 1.0
+    solve_fn = factorized(L.tocsc())
+
+    _ei, _ej, _ew = [], [], []
+    for i in range(N):
+        row = Wsp[i]
+        for j, w in zip(row.indices.tolist(), row.data.tolist()):
+            _ei.append(i); _ej.append(j); _ew.append(w)
+
+    E_i = np.array(_ei, dtype=np.intp)
+    E_j = np.array(_ej, dtype=np.intp)
+    E_w = np.array(_ew, dtype=np.float64)
+    E_orig = V0[E_i] - V0[E_j]
+
+    return solve_fn, E_i, E_j, E_w, E_orig, frozenset(h_idx)
+
+
+def arap_solve(V0, solve_fn, E_i, E_j, E_w, E_orig, h_idx, h_set,
+               handle_targets, n_iter=3):
+    """Решает ARAP для одного кадра. Возвращает деформированные вершины."""
+    N = len(V0)
+    Vd = V0.copy()
+    hmap = dict(zip(h_idx, handle_targets))
+    for h in h_idx:
+        Vd[h] = hmap[h]
+
+    for _ in range(n_iter):
+        E_def = Vd[E_i] - Vd[E_j]
+        outers = E_w[:, None, None] * (E_orig[:, :, None] * E_def[:, None, :])
+        S = np.zeros((N, 2, 2))
+        np.add.at(S, E_i, outers)
+
+        U, _, Vt = np.linalg.svd(S)
+        R = np.einsum('nji,nkj->nik', Vt, U)
+        bad = np.linalg.det(R) < 0
+        if bad.any():
+            U[bad, :, -1] *= -1
+            R[bad] = np.einsum('nji,nkj->nik', Vt[bad], U[bad])
+
+        R_sum = R[E_i] + R[E_j]
+        contrib = 0.5 * E_w[:, None] * np.einsum('eij,ej->ei', R_sum, E_orig)
+        b = np.zeros((N, 2))
+        np.add.at(b, E_i, contrib)
+        for k, h in enumerate(h_idx):
+            b[h] = handle_targets[k]
+
+        Vd[:, 0] = solve_fn(b[:, 0])
+        Vd[:, 1] = solve_fn(b[:, 1])
+
+    return Vd
+
+
+def animate_arap(img_bgra, keypoints, motion_cfg, fps=30, duration=3,
+                 pad=(0, 0, 0, 0), grid_step=40, arap_iters=3):
+    """Генерирует BGRA-кадры с ARAP-деформацией.
+
+    Аналог animate_character, но с плотным мешем и ARAP-солвером.
+    """
+    if img_bgra.shape[2] == 3:
+        img_bgra = cv2.cvtColor(img_bgra, cv2.COLOR_BGR2BGRA)
+
+    pt, pb, pl, pr = pad
+    if any(p > 0 for p in pad):
+        oh, ow = img_bgra.shape[:2]
+        img_bgra = cv2.copyMakeBorder(
+            img_bgra, pt, pb, pl, pr,
+            cv2.BORDER_CONSTANT, value=(0, 0, 0, 0))
+        keypoints = {
+            name: [(x * ow + pl) / img_bgra.shape[1],
+                   (y * oh + pt) / img_bgra.shape[0]]
+            for name, (x, y) in keypoints.items()
+        }
+
+    th, tw = img_bgra.shape[:2]
+    alpha = img_bgra[:, :, 3]
+
+    V0, tri, n_kp, n_int, kp_names, h_idx = build_arap_mesh(
+        keypoints, tw, th, alpha, grid_step)
+
+    corners = V0[n_kp + n_int:]
+    kp_pts = V0[:n_kp].copy()
+
+    solve_fn, E_i, E_j, E_w, E_orig, h_set = precompute_arap(V0, tri, h_idx)
+
+    n_frames = fps * duration
+    frames = []
+    for fi in range(n_frames):
+        t = fi / n_frames
+        tmp = np.vstack([kp_pts, corners])
+        moved = make_motion_from_config(t, tmp, n_kp, kp_names, motion_cfg)
+        handle_targets = np.vstack([moved[:n_kp], corners])
+
+        Vd = arap_solve(V0, solve_fn, E_i, E_j, E_w, E_orig,
+                        h_idx, h_set, handle_targets, arap_iters)
+
+        dst = np.zeros_like(img_bgra)
+        for s in tri.simplices:
+            warp_triangle(img_bgra, V0[s].tolist(), Vd[s].tolist(), dst)
+        frames.append(dst)
+
+    return frames
+
+
+# ---------------------------------------------------------------------------
+#  Превью движения по сцене
+# ---------------------------------------------------------------------------
+
+DEFAULT_MOTION = {
+    "facing": 180,
+    "direction": 180,
+    "flip": False,
+    "swim_duration": 8,
+    "bob_range": [40, 55],
+    "tilt": 8,
+    "tilt_duration": 3,
+}
+
+
+def preview_motion(frames, motion_cfg=None, preview_size=(800, 450), fps=30):
+    """Генерирует превью персонажа, плывущего по сцене.
+
+    Args:
+        frames: список BGRA-кадров анимации (из animate_arap)
+        motion_cfg: параметры одного паттерна движения
+        preview_size: (ширина, высота) превью
+        fps: кадров в секунду
+
+    Returns: list of PIL RGB frames
+    """
+    from PIL import Image, ImageOps
+
+    cfg = dict(DEFAULT_MOTION)
+    if motion_cfg:
+        cfg.update(motion_cfg)
+
+    pw, ph = preview_size
+    n_preview = fps * cfg["swim_duration"]
+    char_h = int(ph * 0.35)
+    char_w = int(char_h * frames[0].shape[1] / frames[0].shape[0])
+    margin = max(char_w, char_h)
+
+    # direction: угол в градусах (0=вправо, 90=вверх, 180=влево, 270=вниз)
+    dir_rad = np.radians(cfg["direction"])
+    # Начало: за противоположным краем, конец: за целевым краем
+    # Персонаж проходит через весь кадр
+    total_x = (pw + 2 * margin) * np.cos(dir_rad)
+    total_y = -(ph + 2 * margin) * np.sin(dir_rad)
+    offset_x = cfg.get("offset_x", 0) / 100 * pw
+    start_x = pw / 2 - total_x / 2 + offset_x
+    start_y = ph / 2 - total_y / 2
+
+    preview_frames = []
+    for i in range(n_preview):
+        t = i / n_preview
+        canvas = Image.new("RGBA", (pw, ph), (100, 120, 140, 255))
+
+        x = int(start_x + total_x * t)
+
+        bob_lo, bob_hi = cfg["bob_range"]
+        bob_t = np.sin(2 * np.pi * t * cfg["swim_duration"] / cfg["tilt_duration"])
+        bob_offset = int(ph * (bob_hi - bob_lo) / 200 * bob_t)
+        y = int(start_y + total_y * t + bob_offset)
+
+        frame = frames[i % len(frames)]
+        pil_char = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGRA2RGBA))
+        if cfg.get("flip"):
+            pil_char = ImageOps.mirror(pil_char)
+        pil_char = pil_char.resize((char_w, char_h), Image.LANCZOS)
+
+        # Поворот: rotate = явный угол поворота персонажа (PIL: positive = CCW)
+        base_angle = cfg.get("rotate", 0)
+        tilt_angle = cfg["tilt"] * np.sin(
+            2 * np.pi * t * cfg["swim_duration"] / cfg["tilt_duration"])
+        pil_char = pil_char.rotate(base_angle + tilt_angle, expand=True,
+                                   resample=Image.BICUBIC, fillcolor=(0, 0, 0, 0))
+
+        cw, ch = pil_char.size
+        canvas.paste(pil_char, (x - cw // 2, y - ch // 2), pil_char)
+        preview_frames.append(canvas.convert("RGB"))
+
+    return preview_frames

@@ -204,7 +204,7 @@ with gr.Blocks(title="Ink-to-Motion") as demo:
                     composite_file = gr.File(label="Скачать HTML")
                     composite_btn.click(
                         fn=do_composite,
-                        inputs=frames_state,
+                        inputs=[frames_state, char_selector],
                         outputs=[composite_out, composite_file],
                     )
 

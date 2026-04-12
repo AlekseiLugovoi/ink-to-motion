@@ -1,12 +1,14 @@
 import io
 import os
+import sys
 import base64
+import random
 import tempfile
+from pathlib import Path
 import cv2
 import numpy as np
 import gradio as gr
 from PIL import Image
-from scipy.spatial import Delaunay
 from xml.etree import ElementTree as ET
 
 try:
@@ -27,6 +29,12 @@ except ImportError:
         BACKGROUND_PATH, BACKGROUND_VIDEO_PATH,
         CHARS,
     )
+
+# Import ARAP animation from preprocessing
+_PREPROC_DIR = str(Path(__file__).resolve().parent.parent / "preprocessing")
+if _PREPROC_DIR not in sys.path:
+    sys.path.insert(0, _PREPROC_DIR)
+from utils import animate_arap as _animate_arap
 
 # ---------------------------------------------------------------------------
 #  Camera helpers
@@ -264,109 +272,13 @@ def transfer_color_app(aligned_pil, char):
     return {"rgba": rgba, "image_rect": image_rect}
 
 
-# ---------------------------------------------------------------------------
-#  Triangulation + Animation
-# ---------------------------------------------------------------------------
-
-def build_triangulation(keypoints, tw, th):
-    names = list(keypoints.keys())
-    skel_pts = np.array(
-        [[kp[0] * tw, kp[1] * th] for kp in keypoints.values()],
-        dtype=np.float32,
-    )
-    corners = np.array(
-        [
-            [0, 0], [tw, 0], [tw, th], [0, th],
-            [tw // 2, 0], [tw, th // 2], [tw // 2, th], [0, th // 2],
-        ],
-        dtype=np.float32,
-    )
-    ctrl_pts = np.vstack([skel_pts, corners])
-    tri = Delaunay(ctrl_pts)
-    return ctrl_pts, tri, len(skel_pts), names
-
-
-def make_motion_from_config(t, base_pts, n_kp, names, motion_cfg):
-    pts = base_pts.copy()
-    a = t * 2 * np.pi
-    name_to_idx = {n: i for i, n in enumerate(names[:n_kp])}
-
-    for i, name in enumerate(names[:n_kp]):
-        if name in motion_cfg:
-            m = motion_cfg[name]
-            w = a * m.get("freq", 1.0) + m.get("phase", 0) * 2 * np.pi
-            pts[i, 0] += m.get("dx", 0) * np.sin(w)
-            pts[i, 1] += m.get("dy", 0) * np.sin(w)
-
-    for i, name in enumerate(names[:n_kp]):
-        if name in motion_cfg:
-            m = motion_cfg[name]
-            max_deg = m.get("angle", 0)
-            pivot = m.get("pivot")
-            if not max_deg or not pivot or pivot not in name_to_idx:
-                continue
-            pi = name_to_idx[pivot]
-            w = a * m.get("freq", 1.0) + m.get("phase", 0) * 2 * np.pi
-            bias = m.get("bias", 0.0)
-            theta = np.radians(max_deg) * (np.sin(w) + bias)
-            ox = base_pts[i, 0] - base_pts[pi, 0]
-            oy = base_pts[i, 1] - base_pts[pi, 1]
-            cos_t, sin_t = np.cos(theta), np.sin(theta)
-            pts[i, 0] = pts[pi, 0] + ox * cos_t - oy * sin_t
-            pts[i, 1] = pts[pi, 1] + ox * sin_t + oy * cos_t
-    return pts
-
-
-def warp_triangle(src_img, src_tri, dst_tri, dst_img):
-    r = cv2.boundingRect(np.float32([dst_tri]))
-    x, y, w, h = r
-    x2 = min(x + w, dst_img.shape[1])
-    y2 = min(y + h, dst_img.shape[0])
-    x, y = max(x, 0), max(y, 0)
-    w, h = x2 - x, y2 - y
-    if w <= 0 or h <= 0:
-        return
-    dst_local = np.float32([(p[0] - x, p[1] - y) for p in dst_tri])
-    M = cv2.getAffineTransform(np.float32(src_tri), dst_local)
-    warped = cv2.warpAffine(
-        src_img, M, (w, h),
-        flags=cv2.INTER_LINEAR,
-        borderMode=cv2.BORDER_REFLECT_101,
-    )
-    mask = np.zeros((h, w), dtype=np.uint8)
-    cv2.fillConvexPoly(mask, np.int32(dst_local), 255)
-    roi = dst_img[y:y2, x:x2]
-    m = mask[: roi.shape[0], : roi.shape[1]] > 0
-    warped = warped[: roi.shape[0], : roi.shape[1]]
-    for c in range(dst_img.shape[2]):
-        roi[:, :, c] = np.where(m, warped[:, :, c], roi[:, :, c])
-
-
 def _generate_frames(aligned_img, char):
     ct_result = transfer_color_app(aligned_img, char)
     rgba = ct_result["rgba"]
-    _, _, tw, th = ct_result["image_rect"]
-
     keypoints = char["skeleton"]["keypoints"]
-    motion_cfg = char["motion"]
-    ctrl_pts, tri, n_kp, names = build_triangulation(keypoints, tw, th)
-
-    if rgba.shape[2] == 3:
-        rgba = cv2.cvtColor(rgba, cv2.COLOR_BGR2BGRA)
-
-    n_frames = FPS * DURATION
-    frames = []
-    for i in range(n_frames):
-        t = i / n_frames
-        dst_pts = make_motion_from_config(t, ctrl_pts, n_kp, names, motion_cfg)
-        dst_img = np.zeros_like(rgba)
-        for simplex in tri.simplices:
-            warp_triangle(
-                rgba, ctrl_pts[simplex].tolist(),
-                dst_pts[simplex].tolist(), dst_img,
-            )
-        frames.append(dst_img)
-    return frames
+    animation_cfg = char["animation"]
+    return _animate_arap(rgba, keypoints, animation_cfg,
+                         fps=FPS, duration=DURATION, pad=(40, 60, 40, 40))
 
 
 # ---------------------------------------------------------------------------
@@ -470,22 +382,56 @@ def _frames_to_apng(cv_frames, max_h=300):
 #  Composite on background
 # ---------------------------------------------------------------------------
 
-def _composite_html(cached_frames):
+def _composite_html(cached_frames, swim_cfg=None):
     fish_path = _frames_to_apng(cached_frames)
     with open(fish_path, "rb") as f:
         fish_b64 = base64.b64encode(f.read()).decode()
 
+    if swim_cfg is None:
+        swim_cfg = {}
+    direction = swim_cfg.get("direction", 180)
+    flip = swim_cfg.get("flip", False)
+    rot = swim_cfg.get("rotate", 0)
+    swim_dur = swim_cfg.get("swim_duration", 8)
+    bob = swim_cfg.get("bob_range", [40, 55])
+    tilt_amp = swim_cfg.get("tilt", 8)
+    tilt_dur = swim_cfg.get("tilt_duration", 3)
+    offset_pct = swim_cfg.get("offset_x", 0)
+
+    # Direction-based trajectory (0=right, 90=up, 180=left, 270=down)
+    dir_rad = np.radians(direction)
+    cos_d, sin_d = np.cos(dir_rad), np.sin(dir_rad)
+    span = 70
+    start_left = 50 - cos_d * span + offset_pct
+    end_left = 50 + cos_d * span + offset_pct
+    start_top = 50 + sin_d * span
+    end_top = 50 - sin_d * span
+    bob_amp = (bob[1] - bob[0]) / 2
+
+    # Bake linear path + sinusoidal bob into multi-step keyframe
+    n_steps = 40
+    kf_lines = []
+    for i in range(n_steps + 1):
+        t = i / n_steps
+        lv = start_left + (end_left - start_left) * t
+        tv = start_top + (end_top - start_top) * t
+        tv += bob_amp * np.sin(2 * np.pi * t * swim_dur / tilt_dur)
+        kf_lines.append(f"    {t*100:.1f}%{{left:{lv:.1f}%;top:{tv:.1f}%;}}")
+    swimpath_css = "\n".join(kf_lines)
+
+    flip_css = "scaleX(-1) " if flip else ""
+
     background_markup = ""
     if os.path.exists(BACKGROUND_VIDEO_PATH):
-        background_markup = f"""
-  <video autoplay muted loop playsinline
-         style="width:100%;height:100%;object-fit:cover;display:block;">
-    <source src="/gradio_api/file={BACKGROUND_VIDEO_PATH}">
-  </video>"""
+        background_markup = (
+            '<video autoplay muted loop playsinline'
+            ' style="width:100%;height:100%;object-fit:cover;display:block;">'
+            f'<source src="/gradio_api/file={BACKGROUND_VIDEO_PATH}">'
+            '</video>')
     else:
-        background_markup = f"""
-  <img src="/gradio_api/file={BACKGROUND_PATH}"
-       style="width:100%;height:100%;object-fit:cover;display:block;">"""
+        background_markup = (
+            f'<img src="/gradio_api/file={BACKGROUND_PATH}"'
+            ' style="width:100%;height:100%;object-fit:cover;display:block;">')
 
     html = f"""\
 <div style="position:relative;width:100%;aspect-ratio:16/9;overflow:hidden;border-radius:12px;cursor:pointer;"
@@ -494,22 +440,18 @@ def _composite_html(cached_frames):
   <img id="fish"
        src="data:image/png;base64,{fish_b64}"
        style="position:absolute;height:35%;
-              animation:swimH 8s linear infinite, swimV 3s ease-in-out infinite, tilt 3s ease-in-out infinite;">
+              animation:swimPath {swim_dur}s linear infinite,
+                        tilt {tilt_dur}s ease-in-out infinite;">
 </div>
 <style>
-  @keyframes swimH {{
-    from {{ left:100%; }}
-    to {{ left:-20%; }}
-  }}
-  @keyframes swimV {{
-    0%,100% {{ top:40%; }}
-    50% {{ top:55%; }}
+  @keyframes swimPath {{
+{swimpath_css}
   }}
   @keyframes tilt {{
-    0% {{ transform:rotate(0deg); }}
-    25% {{ transform:rotate(8deg); }}
-    75% {{ transform:rotate(-8deg); }}
-    100% {{ transform:rotate(0deg); }}
+    0% {{ transform:translate(-50%,-50%) {flip_css}rotate({rot}deg); }}
+    25% {{ transform:translate(-50%,-50%) {flip_css}rotate({rot + tilt_amp}deg); }}
+    75% {{ transform:translate(-50%,-50%) {flip_css}rotate({rot - tilt_amp}deg); }}
+    100% {{ transform:translate(-50%,-50%) {flip_css}rotate({rot}deg); }}
   }}
 </style>
 <script>
@@ -523,7 +465,7 @@ def _composite_html(cached_frames):
   }});
   (function loop() {{
     speed += (target - speed) * 0.02;
-    fish.style.animationDuration = (8/speed)+'s,'+(3/speed)+'s,'+(3/speed)+'s';
+    fish.style.animationDuration = ({swim_dur}/speed)+'s,'+({tilt_dur}/speed)+'s';
     requestAnimationFrame(loop);
   }})();
 }})();
@@ -546,7 +488,9 @@ def auto_process(photo, char_id):
     aligned = align(photo)
     frames = _generate_frames(aligned, char)
     mp4_path = _frames_to_mp4(frames)
-    html = _composite_html(frames)
+    motion_patterns = char.get("motion", {})
+    pattern = random.choice(list(motion_patterns.values())) if motion_patterns else None
+    html = _composite_html(frames, pattern)
     return mp4_path, html
 
 
@@ -585,22 +529,11 @@ def _generate_animation_preview(char):
     svg_path = char["svg"]
     image_rect = compute_image_rect(svg_path)
     _, _, tw, th = image_rect
-
-    img_rgba = _render_svg_polygons(svg_path, tw, th)
+    img_bgra = _render_svg_polygons(svg_path, tw, th)
     keypoints = char["skeleton"]["keypoints"]
-    motion_cfg = char["motion"]
-    ctrl_pts, tri, n_kp, names = build_triangulation(keypoints, tw, th)
-
-    n_frames = FPS * DURATION
-    frames = []
-    for i in range(n_frames):
-        t = i / n_frames
-        dst_pts = make_motion_from_config(t, ctrl_pts, n_kp, names, motion_cfg)
-        dst_img = np.zeros_like(img_rgba)
-        for simplex in tri.simplices:
-            warp_triangle(img_rgba, ctrl_pts[simplex].tolist(),
-                          dst_pts[simplex].tolist(), dst_img)
-        frames.append(dst_img)
+    animation_cfg = char["animation"]
+    frames = _animate_arap(img_bgra, keypoints, animation_cfg,
+                           fps=FPS, duration=DURATION, pad=(40, 60, 40, 40))
     return _frames_to_mp4(frames)
 
 
@@ -646,10 +579,17 @@ def do_animation(aligned_img, char_id):
     return mp4_path, frames
 
 
-def do_composite(cached_frames):
+def do_composite(cached_frames, char_id=None):
     if not cached_frames:
         raise gr.Error("Сначала собери анимацию.")
-    html = _composite_html(cached_frames)
+    pattern = None
+    if char_id:
+        char = CHARS.get(char_id)
+        if char:
+            motion_patterns = char.get("motion", {})
+            if motion_patterns:
+                pattern = random.choice(list(motion_patterns.values()))
+    html = _composite_html(cached_frames, pattern)
     tmp = tempfile.NamedTemporaryFile(
         suffix=".html", delete=False, mode="w", encoding="utf-8",
     )

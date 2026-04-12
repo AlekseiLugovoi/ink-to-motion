@@ -1,44 +1,34 @@
 {
-  "left_tail1": {
-    "dx": 12,
-    "dy": 20,
-    "freq": 1.0,
-    "phase": 0.0
+  "left": {
+    "direction": 180,
+    "flip": false,
+    "swim_duration": 8,
+    "bob_range": [46, 48],
+    "tilt": 2,
+    "tilt_duration": 3
   },
-  "right_tail1": {
-    "dx": 12,
-    "dy": 20,
-    "freq": 1.0,
-    "phase": 0.0
+  "right": {
+    "direction": 0,
+    "flip": true,
+    "swim_duration": 8,
+    "bob_range": [46, 48],
+    "tilt": 2,
+    "tilt_duration": 3
   },
-  "center_tail1": {
-    "dx": 5,
-    "dy": 0,
-    "freq": 1.0,
-    "phase": 0.0
+  "diag_up_right": {
+    "direction": 30,
+    "flip": true,
+    "swim_duration": 10,
+    "bob_range": [46, 48],
+    "tilt": 2,
+    "tilt_duration": 3
   },
-  "upper_fin1": {
-    "dx": 8,
-    "dy": 0,
-    "freq": 1.0,
-    "phase": 0.0
-  },
-  "lower_fin1": {
-    "dx": 8,
-    "dy": 0,
-    "freq": 1.0,
-    "phase": 0.0
-  },
-  "head": {
-    "dx": 0,
-    "dy": 8,
-    "freq": 1.0,
-    "phase": 0.0
-  },
-  "nose": {
-    "dx": 0,
-    "dy": 8,
-    "freq": 1.0,
-    "phase": 0.0
+  "diag_up_left": {
+    "direction": 150,
+    "flip": false,
+    "swim_duration": 10,
+    "bob_range": [46, 48],
+    "tilt": 2,
+    "tilt_duration": 3
   }
 }

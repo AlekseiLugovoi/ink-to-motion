@@ -1,68 +1,32 @@
 {
-  "ten1_1": {
-    "dx": 12,
-    "dy": 20,
-    "freq": 1.0,
-    "phase": 0.5
+  "up_center": {
+    "direction": 90,
+    "flip": false,
+    "rotate": 0,
+    "offset_x": 0,
+    "swim_duration": 10,
+    "bob_range": [46, 48],
+    "tilt": 2,
+    "tilt_duration": 3
   },
-  "ten2_1": {
-    "dx": 12,
-    "dy": 20,
-    "freq": 1.0,
-    "phase": 0.0
+  "up_left": {
+    "direction": 90,
+    "flip": false,
+    "rotate": 0,
+    "offset_x": -25,
+    "swim_duration": 10,
+    "bob_range": [46, 48],
+    "tilt": 2,
+    "tilt_duration": 3
   },
-  "ten3_1": {
-    "dx": 12,
-    "dy": 20,
-    "freq": 1.0,
-    "phase": 0.0
-  },
-  "ten4_1": {
-    "dx": 12,
-    "dy": 20,
-    "freq": 1.0,
-    "phase": 0.0
-  },
-  "ten5_1": {
-    "dx": 12,
-    "dy": 20,
-    "freq": 1.0,
-    "phase": 0.0
-  },
-  "ten6_1": {
-    "dx": 12,
-    "dy": 20,
-    "freq": 1.0,
-    "phase": 0.0
-  },
-  "ten7_1": {
-    "dx": 12,
-    "dy": 20,
-    "freq": 1.0,
-    "phase": 0.5
-  },
-  "head2": {
-    "dx": 0,
-    "dy": 8,
-    "freq": 1.0,
-    "phase": 0.0
-  },
-  "head3": {
-    "dx": 0,
-    "dy": 8,
-    "freq": 1.0,
-    "phase": 0.0
-  },
-  "head4": {
-    "dx": 0,
-    "dy": 8,
-    "freq": 1.0,
-    "phase": 0.0
-  },
-  "nose": {
-    "dx": 0,
-    "dy": 3,
-    "freq": 1.0,
-    "phase": 0.0
+  "up_right": {
+    "direction": 90,
+    "flip": false,
+    "rotate": 0,
+    "offset_x": 25,
+    "swim_duration": 10,
+    "bob_range": [46, 48],
+    "tilt": 2,
+    "tilt_duration": 3
   }
 }

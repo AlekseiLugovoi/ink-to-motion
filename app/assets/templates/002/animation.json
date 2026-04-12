@@ -1,0 +1,62 @@
+{
+  "t1": {
+    "angle": 2,
+    "pivot": "b2",
+    "freq": 2,
+    "phase": 0.0
+  },
+  "t2": {
+    "angle": 8,
+    "pivot": "t1",
+    "freq": 2,
+    "phase": 0.04
+  },
+  "t3": {
+    "angle": 10,
+    "pivot": "t2",
+    "freq": 2,
+    "phase": 0.08
+  },
+  "t4": {
+    "angle": 12,
+    "pivot": "t3",
+    "freq": 2,
+    "phase": 0.12
+  },
+  "t5": {
+    "angle": 14,
+    "pivot": "t4",
+    "freq": 2,
+    "phase": 0.16
+  },
+  "t6": {
+    "angle": 10,
+    "pivot": "t2",
+    "freq": 2,
+    "phase": 0.10
+  },
+  "w1": {
+    "angle": 3,
+    "pivot": "b1",
+    "freq": 1,
+    "phase": 0.0
+  },
+  "w2": {
+    "angle": 3,
+    "pivot": "b1",
+    "freq": 1,
+    "phase": 0.0
+  },
+  "f1": {
+    "angle": 4,
+    "pivot": "b1",
+    "freq": 3,
+    "phase": 0.0
+  },
+  "f6": {
+    "angle": 4,
+    "pivot": "b2",
+    "freq": 3,
+    "phase": 0.5
+  }
+}

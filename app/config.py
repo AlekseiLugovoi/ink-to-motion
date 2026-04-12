@@ -34,23 +34,61 @@ DURATION = 2
 
 # ---------------------------------------------------------------------------
 #  Auto-discover characters
-#  Each char dir must have: mask.svg, skeleton.json, motion.json
+#  Each char dir must have: mask.svg, skeleton.json, animation.json
 # ---------------------------------------------------------------------------
+
+DEFAULT_MOTION = {
+    "rotate": 0,
+    "swim_duration": 8,
+    "bob_range": [40, 55],
+    "tilt": 8,
+    "tilt_duration": 3,
+}
+
+
+def _parse_motion(raw):
+    """Парсит motion.json: один паттерн или dict паттернов.
+
+    Один паттерн: {"rotate": 0, "swim_duration": 8, ...}
+    Несколько:    {"swim_left": {...}, "swim_right": {...}}
+
+    Возвращает dict {name: pattern}.
+    """
+    if not raw:
+        return {"default": dict(DEFAULT_MOTION)}
+    # Проверяем: если есть вложенные dict — это несколько паттернов
+    if any(isinstance(v, dict) for v in raw.values()):
+        result = {}
+        for name, pat in raw.items():
+            merged = dict(DEFAULT_MOTION)
+            merged.update(pat)
+            result[name] = merged
+        return result
+    # Один паттерн
+    merged = dict(DEFAULT_MOTION)
+    merged.update(raw)
+    return {"default": merged}
 
 CHARS = {}
 for _char_dir in sorted(TEMPLATES_DIR.iterdir()):
     if not _char_dir.is_dir():
         continue
     _char_id = _char_dir.name
-    _required = ["mask.svg", "skeleton.json", "motion.json"]
+    _required = ["mask.svg", "skeleton.json", "animation.json"]
     if all((_char_dir / f).exists() for f in _required):
         with open(_char_dir / "skeleton.json", encoding="utf-8") as _f:
             _skel = json.load(_f)
-        with open(_char_dir / "motion.json", encoding="utf-8") as _f:
-            _motion = json.load(_f)
+        with open(_char_dir / "animation.json", encoding="utf-8") as _f:
+            _anim = json.load(_f)
+        _motion_raw = {}
+        if (_char_dir / "motion.json").exists():
+            with open(_char_dir / "motion.json", encoding="utf-8") as _f:
+                _motion_raw = json.load(_f)
+        _motion = _parse_motion(_motion_raw)
         CHARS[_char_id] = {
             "svg": str((_char_dir / "mask.svg").resolve()),
             "skeleton": _skel,
+            "animation": _anim,
             "motion": _motion,
             "template": str((_char_dir / "template.png").resolve()) if (_char_dir / "template.png").exists() else None,
         }
