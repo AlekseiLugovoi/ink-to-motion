@@ -1067,48 +1067,87 @@ def preview_motion(frames, motion_cfg=None, preview_size=(800, 450), fps=30):
         cfg.update(motion_cfg)
 
     pw, ph = preview_size
-    n_preview = fps * cfg["swim_duration"]
+    swim_dur = cfg["swim_duration"]
+    n_preview = fps * swim_dur * 2  # round trip
     char_h = int(ph * 0.35)
     char_w = int(char_h * frames[0].shape[1] / frames[0].shape[0])
-    margin = max(char_w, char_h)
 
     # direction: угол в градусах (0=вправо, 90=вверх, 180=влево, 270=вниз)
-    dir_rad = np.radians(cfg["direction"])
-    # Начало: за противоположным краем, конец: за целевым краем
-    # Персонаж проходит через весь кадр
-    total_x = (pw + 2 * margin) * np.cos(dir_rad)
-    total_y = -(ph + 2 * margin) * np.sin(dir_rad)
+    direction = cfg["direction"]
+    dir_rad = np.radians(direction)
+    cos_d, sin_d = np.cos(dir_rad), np.sin(dir_rad)
+
+    # Bounce points — персонаж остаётся видимым
+    span_x = pw * 0.35
+    span_y = ph * 0.35
     offset_x = cfg.get("offset_x", 0) / 100 * pw
-    start_x = pw / 2 - total_x / 2 + offset_x
-    start_y = ph / 2 - total_y / 2
+    ax = pw / 2 - cos_d * span_x + offset_x
+    ay = ph / 2 + sin_d * span_y
+    bx = pw / 2 + cos_d * span_x + offset_x
+    by = ph / 2 - sin_d * span_y
+
+    bob_lo, bob_hi = cfg["bob_range"]
+    bob_amp = ph * (bob_hi - bob_lo) / 200
+    tilt_dur = cfg["tilt_duration"]
+    base_angle = cfg.get("rotate", 0)
+    do_flip = cfg.get("flip", False)
+
+    # Разворот: дуга в сторону носа (нос — маленький радиус, хвост — большой)
+    # flip=False → рыба смотрит влево → нос слева → поворот влево (+180 PIL CCW)
+    # flip=True  → рыба смотрит вправо → нос справа → поворот вправо (-180 PIL CW)
+    turn_sign = 1 if not do_flip else -1
+    turn_R = char_h * 0.3
+    perp_angle = np.radians(direction + 90 * turn_sign)
+    perp_sx = np.cos(perp_angle)
+    perp_sy = -np.sin(perp_angle)
+
+    turn_frac = 0.06  # 6% анимации (~1с при swim_dur=8)
+    fwd_end = 0.5 - turn_frac
+    ret_start = 0.5 + turn_frac
 
     preview_frames = []
     for i in range(n_preview):
         t = i / n_preview
         canvas = Image.new("RGBA", (pw, ph), (100, 120, 140, 255))
 
-        x = int(start_x + total_x * t)
-
-        bob_lo, bob_hi = cfg["bob_range"]
-        bob_t = np.sin(2 * np.pi * t * cfg["swim_duration"] / cfg["tilt_duration"])
-        bob_offset = int(ph * (bob_hi - bob_lo) / 200 * bob_t)
-        y = int(start_y + total_y * t + bob_offset)
+        if t <= fwd_end:
+            # --- Прямой путь A → B ---
+            frac = t / fwd_end
+            x = ax + (bx - ax) * frac
+            y = ay + (by - ay) * frac
+            phase = frac * swim_dur / tilt_dur
+            y += bob_amp * np.sin(2 * np.pi * phase)
+            tilt_v = cfg["tilt"] * np.sin(2 * np.pi * phase)
+            angle = base_angle + tilt_v
+        elif t <= ret_start:
+            # --- Разворот: дуга перпендикулярно курсу + поворот 180° ---
+            turn_progress = (t - fwd_end) / (ret_start - fwd_end)
+            smooth = 0.5 - 0.5 * np.cos(np.pi * turn_progress)
+            angle = base_angle + turn_sign * 180 * smooth
+            arc = turn_R * np.sin(np.pi * turn_progress)
+            x = bx + arc * perp_sx
+            y = by + arc * perp_sy
+        else:
+            # --- Обратный путь B → A ---
+            frac = (t - ret_start) / (1 - ret_start)
+            x = bx + (ax - bx) * frac
+            y = by + (ay - by) * frac
+            phase = frac * swim_dur / tilt_dur
+            y += bob_amp * np.sin(2 * np.pi * phase)
+            tilt_v = cfg["tilt"] * np.sin(2 * np.pi * phase)
+            angle = base_angle + turn_sign * 180 + tilt_v
 
         frame = frames[i % len(frames)]
         pil_char = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGRA2RGBA))
-        if cfg.get("flip"):
+        if do_flip:
             pil_char = ImageOps.mirror(pil_char)
         pil_char = pil_char.resize((char_w, char_h), Image.LANCZOS)
 
-        # Поворот: rotate = явный угол поворота персонажа (PIL: positive = CCW)
-        base_angle = cfg.get("rotate", 0)
-        tilt_angle = cfg["tilt"] * np.sin(
-            2 * np.pi * t * cfg["swim_duration"] / cfg["tilt_duration"])
-        pil_char = pil_char.rotate(base_angle + tilt_angle, expand=True,
+        pil_char = pil_char.rotate(angle, expand=True,
                                    resample=Image.BICUBIC, fillcolor=(0, 0, 0, 0))
 
         cw, ch = pil_char.size
-        canvas.paste(pil_char, (x - cw // 2, y - ch // 2), pil_char)
+        canvas.paste(pil_char, (int(x) - cw // 2, int(y) - ch // 2), pil_char)
         preview_frames.append(canvas.convert("RGB"))
 
     return preview_frames

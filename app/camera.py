@@ -405,15 +405,15 @@ CSS = """
   padding: 12px 0;
 }
 .qr-card {
-  border: 1px solid #e5e7eb;
-  border-radius: 16px;
+  border: 1px dashed #d1d5db;
+  border-radius: 12px;
   overflow: hidden;
-  background: #fff;
+  background: #f8fafc;
   display: flex;
   justify-content: center;
   align-items: center;
-  padding: 20px;
-  height: 220px;
+  padding: 12px;
+  height: 140px;
   box-sizing: border-box;
 }
 .qr-card canvas {

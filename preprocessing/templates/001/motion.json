@@ -2,33 +2,33 @@
   "left": {
     "direction": 180,
     "flip": false,
-    "swim_duration": 8,
-    "bob_range": [46, 48],
-    "tilt": 2,
+    "swim_duration": 4,
+    "bob_range": [40, 50],
+    "tilt": 4,
     "tilt_duration": 3
   },
   "right": {
     "direction": 0,
     "flip": true,
-    "swim_duration": 8,
-    "bob_range": [46, 48],
-    "tilt": 2,
+    "swim_duration": 4,
+    "bob_range": [40, 50],
+    "tilt": 4,
     "tilt_duration": 3
   },
   "diag_up_right": {
     "direction": 30,
     "flip": true,
-    "swim_duration": 10,
-    "bob_range": [46, 48],
-    "tilt": 2,
+    "swim_duration": 5,
+    "bob_range": [40, 50],
+    "tilt": 4,
     "tilt_duration": 3
   },
   "diag_up_left": {
     "direction": 150,
     "flip": false,
-    "swim_duration": 10,
-    "bob_range": [46, 48],
-    "tilt": 2,
+    "swim_duration": 5,
+    "bob_range": [40, 50],
+    "tilt": 4,
     "tilt_duration": 3
   }
 }

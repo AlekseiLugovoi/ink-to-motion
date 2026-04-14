@@ -4,9 +4,9 @@
     "flip": false,
     "rotate": 0,
     "offset_x": 0,
-    "swim_duration": 10,
-    "bob_range": [46, 48],
-    "tilt": 2,
+    "swim_duration": 5,
+    "bob_range": [40, 50],
+    "tilt": 4,
     "tilt_duration": 3
   },
   "up_left": {
@@ -14,9 +14,9 @@
     "flip": false,
     "rotate": 0,
     "offset_x": -25,
-    "swim_duration": 10,
-    "bob_range": [46, 48],
-    "tilt": 2,
+    "swim_duration": 5,
+    "bob_range": [40, 50],
+    "tilt": 4,
     "tilt_duration": 3
   },
   "up_right": {
@@ -24,9 +24,9 @@
     "flip": false,
     "rotate": 0,
     "offset_x": 25,
-    "swim_duration": 10,
-    "bob_range": [46, 48],
-    "tilt": 2,
+    "swim_duration": 5,
+    "bob_range": [40, 50],
+    "tilt": 4,
     "tilt_duration": 3
   }
 }

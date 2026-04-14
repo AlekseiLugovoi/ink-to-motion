@@ -3,6 +3,7 @@ import os
 import base64
 import random
 import tempfile
+import time
 import cv2
 import numpy as np
 import gradio as gr
@@ -29,6 +30,32 @@ except ImportError:
         CHARS,
     )
     from arap import animate_arap as _animate_arap
+
+# ---------------------------------------------------------------------------
+#  Temp file tracking & cleanup
+# ---------------------------------------------------------------------------
+
+_temp_files: list[str] = []
+
+
+def _track_temp(path: str) -> str:
+    """Register a temp file for later cleanup."""
+    _temp_files.append(path)
+    return path
+
+
+def _cleanup_temp():
+    """Delete all tracked temp files."""
+    for p in _temp_files:
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+    _temp_files.clear()
+
+
+import atexit
+atexit.register(_cleanup_temp)
 
 # ---------------------------------------------------------------------------
 #  Camera helpers
@@ -282,8 +309,12 @@ def _frames_to_mp4(cv_frames):
     tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
     tmp.close()
     h, w = cv_frames[0].shape[:2]
+    # Pad to multiples of 16 (H.264 macro_block_size requirement)
+    w16 = (w + 15) // 16 * 16
+    h16 = (h + 15) // 16 * 16
+    need_pad = (w16 != w or h16 != h)
     writer = imageio_ffmpeg.write_frames(
-        tmp.name, (w, h), fps=FPS,
+        tmp.name, (w16, h16), fps=FPS,
         codec="libx264", pix_fmt_in="rgb24", pix_fmt_out="yuv420p",
         output_params=["-crf", "23", "-preset", "fast", "-movflags", "+faststart"],
     )
@@ -297,9 +328,12 @@ def _frames_to_mp4(cv_frames):
             )
         else:
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        if need_pad:
+            rgb = cv2.copyMakeBorder(rgb, 0, h16 - h, 0, w16 - w,
+                                     cv2.BORDER_CONSTANT, value=(255, 255, 255))
         writer.send(rgb.tobytes())
     writer.close()
-    return tmp.name
+    return _track_temp(tmp.name)
 
 
 def _frames_to_apng(cv_frames, max_h=300):
@@ -320,7 +354,7 @@ def _frames_to_apng(cv_frames, max_h=300):
         append_images=pil_frames[1:],
         duration=1000 // FPS, loop=0,
     )
-    return tmp.name
+    return _track_temp(tmp.name)
 
 
 # ---------------------------------------------------------------------------
@@ -343,28 +377,61 @@ def _composite_html(cached_frames, swim_cfg=None):
     tilt_dur = swim_cfg.get("tilt_duration", 3)
     offset_pct = swim_cfg.get("offset_x", 0)
 
-    # Direction-based trajectory (0=right, 90=up, 180=left, 270=down)
+    total_dur = swim_dur * 2  # round trip
+
+    # Bounce points (visible, not off-screen)
     dir_rad = np.radians(direction)
     cos_d, sin_d = np.cos(dir_rad), np.sin(dir_rad)
-    span = 70
-    start_left = 50 - cos_d * span + offset_pct
-    end_left = 50 + cos_d * span + offset_pct
-    start_top = 50 + sin_d * span
-    end_top = 50 - sin_d * span
+    span = 35
+    ax = 50 - cos_d * span + offset_pct
+    ay = 50 + sin_d * span
+    bx = 50 + cos_d * span + offset_pct
+    by = 50 - sin_d * span
     bob_amp = (bob[1] - bob[0]) / 2
 
-    # Bake linear path + sinusoidal bob into multi-step keyframe
-    n_steps = 40
+    # Forward / return orientation
+    sx_fwd = -1 if flip else 1
+    sx_ret = -sx_fwd
+
+    # Bake round-trip path + bob + tilt + turn into one keyframe
+    turn = 0.025  # 2.5% of animation for turn (~0.4s)
+    fwd_end = 0.5 - turn
+    ret_start = 0.5 + turn
+    n_steps = 80
     kf_lines = []
     for i in range(n_steps + 1):
         t = i / n_steps
-        lv = start_left + (end_left - start_left) * t
-        tv = start_top + (end_top - start_top) * t
-        tv += bob_amp * np.sin(2 * np.pi * t * swim_dur / tilt_dur)
-        kf_lines.append(f"    {t*100:.1f}%{{left:{lv:.1f}%;top:{tv:.1f}%;}}")
-    swimpath_css = "\n".join(kf_lines)
-
-    flip_css = " scaleX(-1)" if flip else ""
+        if t <= fwd_end:
+            frac = t / fwd_end
+            lv = ax + (bx - ax) * frac
+            tv = ay + (by - ay) * frac
+            phase = frac * swim_dur / tilt_dur
+            tv += bob_amp * np.sin(2 * np.pi * phase)
+            tilt_v = tilt_amp * np.sin(2 * np.pi * phase)
+            r = -rot - tilt_v
+            sx = sx_fwd
+        elif t <= 0.5:
+            lv, tv = bx, by
+            squeeze = 1 - (t - fwd_end) / turn
+            r = -rot
+            sx = sx_fwd * squeeze
+        elif t <= ret_start:
+            lv, tv = bx, by
+            expand = (t - 0.5) / turn
+            r = rot
+            sx = sx_ret * expand
+        else:
+            frac = (t - ret_start) / (1 - ret_start)
+            lv = bx + (ax - bx) * frac
+            tv = by + (ay - by) * frac
+            phase = frac * swim_dur / tilt_dur
+            tv += bob_amp * np.sin(2 * np.pi * phase)
+            tilt_v = tilt_amp * np.sin(2 * np.pi * phase)
+            r = rot - tilt_v
+            sx = sx_ret
+        tf = f"translate(-50%,-50%) rotate({r:.1f}deg) scaleX({sx:.3f})"
+        kf_lines.append(f"    {t*100:.1f}%{{left:{lv:.1f}%;top:{tv:.1f}%;transform:{tf};}}")
+    swim_css = "\n".join(kf_lines)
 
     background_markup = ""
     if os.path.exists(BACKGROUND_VIDEO_PATH):
@@ -385,18 +452,11 @@ def _composite_html(cached_frames, swim_cfg=None):
   <img id="fish"
        src="data:image/png;base64,{fish_b64}"
        style="position:absolute;height:35%;
-              animation:swimPath {swim_dur}s linear infinite,
-                        tilt {tilt_dur}s ease-in-out infinite;">
+              animation:swim {total_dur}s linear infinite;">
 </div>
 <style>
-  @keyframes swimPath {{
-{swimpath_css}
-  }}
-  @keyframes tilt {{
-    0% {{ transform:translate(-50%,-50%) rotate({-rot}deg){flip_css}; }}
-    25% {{ transform:translate(-50%,-50%) rotate({-(rot + tilt_amp)}deg){flip_css}; }}
-    75% {{ transform:translate(-50%,-50%) rotate({-(rot - tilt_amp)}deg){flip_css}; }}
-    100% {{ transform:translate(-50%,-50%) rotate({-rot}deg){flip_css}; }}
+  @keyframes swim {{
+{swim_css}
   }}
 </style>
 <script>
@@ -410,7 +470,7 @@ def _composite_html(cached_frames, swim_cfg=None):
   }});
   (function loop() {{
     speed += (target - speed) * 0.02;
-    fish.style.animationDuration = ({swim_dur}/speed)+'s,'+({tilt_dur}/speed)+'s';
+    fish.style.animationDuration = ({total_dur}/speed)+'s';
     requestAnimationFrame(loop);
   }})();
 }})();
@@ -419,24 +479,272 @@ def _composite_html(cached_frames, swim_cfg=None):
 
 
 # ---------------------------------------------------------------------------
+#  Aquarium
+# ---------------------------------------------------------------------------
+
+AQUARIUM_EMPTY = (
+    '<div style="min-height:300px;display:flex;align-items:center;'
+    'justify-content:center;color:#9ca3af;border:1px dashed #d1d5db;'
+    'border-radius:12px;background:#f8fafc;">'
+    '<span style="font-size:18px;">Аквариум пуст — добавь персонажа</span></div>'
+)
+
+
+def _swim_keyframes(swim_cfg, name="swim", offset_y=0):
+    """Generate CSS @keyframes + total_dur for one fish."""
+    cfg = swim_cfg or {}
+    direction = cfg.get("direction", 180)
+    flip = cfg.get("flip", False)
+    rot = cfg.get("rotate", 0)
+    swim_dur = cfg.get("swim_duration", 8)
+    bob = cfg.get("bob_range", [40, 55])
+    tilt_amp = cfg.get("tilt", 8)
+    tilt_dur = cfg.get("tilt_duration", 3)
+    offset_pct = cfg.get("offset_x", 0)
+
+    total_dur = swim_dur * 2
+    dir_rad = np.radians(direction)
+    cos_d, sin_d = np.cos(dir_rad), np.sin(dir_rad)
+    span = 35
+    ax = 50 - cos_d * span + offset_pct
+    ay = 50 + sin_d * span + offset_y
+    bx = 50 + cos_d * span + offset_pct
+    by = 50 - sin_d * span + offset_y
+    bob_amp = (bob[1] - bob[0]) / 2
+    sx_fwd = -1 if flip else 1
+    sx_ret = -sx_fwd
+    turn = 0.025
+    fwd_end = 0.5 - turn
+    ret_start = 0.5 + turn
+
+    kf_lines = []
+    n_steps = 20
+    for i in range(n_steps + 1):
+        t = i / n_steps
+        if t <= fwd_end:
+            frac = t / fwd_end
+            lv = ax + (bx - ax) * frac
+            tv = ay + (by - ay) * frac
+            phase = frac * swim_dur / tilt_dur
+            tv += bob_amp * np.sin(2 * np.pi * phase)
+            tilt_v = tilt_amp * np.sin(2 * np.pi * phase)
+            r, sx = -rot - tilt_v, sx_fwd
+        elif t <= 0.5:
+            lv, tv = bx, by
+            r, sx = -rot, sx_fwd * (1 - (t - fwd_end) / turn)
+        elif t <= ret_start:
+            lv, tv = bx, by
+            r, sx = rot, sx_ret * ((t - 0.5) / turn)
+        else:
+            frac = (t - ret_start) / (1 - ret_start)
+            lv = bx + (ax - bx) * frac
+            tv = by + (ay - by) * frac
+            phase = frac * swim_dur / tilt_dur
+            tv += bob_amp * np.sin(2 * np.pi * phase)
+            tilt_v = tilt_amp * np.sin(2 * np.pi * phase)
+            r, sx = rot - tilt_v, sx_ret
+        # Guard against NaN from bad config values
+        if np.isnan(lv) or np.isnan(tv) or np.isnan(r) or np.isnan(sx):
+            print(f"[WARN] NaN at step {i}/{n_steps} in {name}: "
+                  f"lv={lv}, tv={tv}, r={r}, sx={sx}, cfg={cfg}")
+            lv = np.nan_to_num(lv, nan=50.0)
+            tv = np.nan_to_num(tv, nan=50.0)
+            r = np.nan_to_num(r, nan=0.0)
+            sx = np.nan_to_num(sx, nan=1.0)
+        tf = f"translate(-50%,-50%) rotate({r:.1f}deg) scaleX({sx:.3f})"
+        kf_lines.append(
+            f"{t*100:.1f}% {{ left:{lv:.1f}%; top:{tv:.1f}%; transform:{tf}; }}")
+
+    css = f"@keyframes {name} {{\n" + "\n".join(kf_lines) + "\n}"
+    return css, total_dur
+
+
+def _aquarium_html(fish_list):
+    """Generate aquarium HTML with inline <style> and unique keyframe names."""
+    if not fish_list:
+        return AQUARIUM_EMPTY, ""
+
+    # Unique prefix to avoid stale CSS keyframe collisions across updates
+    uid = int(time.time() * 1000) % 1_000_000
+
+    bg_path = BACKGROUND_VIDEO_PATH if os.path.exists(BACKGROUND_VIDEO_PATH) else BACKGROUND_PATH
+    if os.path.exists(BACKGROUND_VIDEO_PATH):
+        bg = (
+            '<video autoplay muted loop playsinline'
+            ' style="width:100%;height:100%;object-fit:cover;display:block;">'
+            f'<source src="/gradio_api/file={BACKGROUND_VIDEO_PATH}">'
+            '</video>')
+    else:
+        bg = (
+            f'<img src="/gradio_api/file={BACKGROUND_PATH}"'
+            ' style="width:100%;height:100%;object-fit:cover;display:block;">')
+
+    imgs = []
+    styles = []
+    for idx, fish in enumerate(fish_list):
+        kf_name = f"aq{uid}_{idx}"
+        cfg = fish["swim_cfg"] or {}
+        direction = cfg.get("direction", 180)
+        flip = cfg.get("flip", False)
+        rot = cfg.get("rotate", 0)
+        swim_dur = cfg.get("swim_duration", 8)
+        bob = cfg.get("bob_range", [40, 55])
+        tilt_amp = cfg.get("tilt", 8)
+        tilt_dur = cfg.get("tilt_duration", 3) or 3
+        total_dur = swim_dur * 2
+        oy = cfg.get("offset_y", fish.get("offset_y", 0))
+        ox = cfg.get("offset_x", 0)
+
+        dr = np.radians(direction)
+        cos_d, sin_d = np.cos(dr), np.sin(dr)
+        span = 35
+        ax = 50 - cos_d * span + ox
+        ay = 50 + sin_d * span + oy
+        bx = 50 + cos_d * span + ox
+        by = 50 - sin_d * span + oy
+        bob_amp = (bob[1] - bob[0]) / 2 if isinstance(bob, (list, tuple)) and len(bob) >= 2 else 5
+        sf = -1 if flip else 1
+        sr = -sf
+
+        # Build keyframes: 10 forward + turn + 10 return + turn = ~24 steps
+        lines = []
+        # Forward: 0% → 48%
+        for i in range(11):
+            frac = i / 10
+            pct = int(frac * 48)
+            lv = ax + (bx - ax) * frac
+            tv = ay + (by - ay) * frac
+            phase = frac * swim_dur / tilt_dur
+            tv += bob_amp * np.sin(2 * np.pi * phase)
+            tilt_v = tilt_amp * np.sin(2 * np.pi * phase)
+            r = -rot - tilt_v
+            lines.append(f"  {pct}% {{ left:{int(lv)}%; top:{int(tv)}%; "
+                         f"transform:translate(-50%,-50%) rotate({r:.0f}deg) scaleX({sf}); }}")
+        # Turn: 49% → 51%
+        lines.append(f"  49% {{ left:{int(bx)}%; top:{int(by)}%; "
+                     f"transform:translate(-50%,-50%) rotate({-rot:.0f}deg) scaleX(0); }}")
+        lines.append(f"  51% {{ left:{int(bx)}%; top:{int(by)}%; "
+                     f"transform:translate(-50%,-50%) rotate({rot:.0f}deg) scaleX(0); }}")
+        # Return: 52% → 99%
+        for i in range(11):
+            frac = i / 10
+            pct = 52 + int(frac * 47)
+            lv = bx + (ax - bx) * frac
+            tv = by + (ay - by) * frac
+            phase = frac * swim_dur / tilt_dur
+            tv += bob_amp * np.sin(2 * np.pi * phase)
+            tilt_v = tilt_amp * np.sin(2 * np.pi * phase)
+            r = rot - tilt_v
+            lines.append(f"  {pct}% {{ left:{int(lv)}%; top:{int(tv)}%; "
+                         f"transform:translate(-50%,-50%) rotate({r:.0f}deg) scaleX({sr}); }}")
+        # Close loop
+        lines.append(f"  100% {{ left:{int(ax)}%; top:{int(ay)}%; "
+                     f"transform:translate(-50%,-50%) rotate({-rot:.0f}deg) scaleX({sf}); }}")
+
+        css = f"@keyframes {kf_name} {{\n" + "\n".join(lines) + "\n}"
+        styles.append(css)
+        delay = cfg.get("delay", fish.get("delay", 0))
+        size = cfg.get("size", fish.get("size", 30))
+        apng_path = fish["apng_path"].replace("\\", "/")
+        imgs.append(
+            f'<img src="/gradio_api/file={apng_path}"'
+            f' style="position:absolute;height:{size}%;z-index:{idx + 1};'
+            f'animation:{kf_name} {total_dur}s linear infinite -{delay:.1f}s;">')
+        print(f"[aquarium] fish #{idx}: {kf_name} A=({ax},{ay}) B=({bx},{by}) "
+              f"flip={flip} dur={total_dur}s delay=-{delay}s")
+
+    all_css = "\n".join(styles)
+
+    # Save standalone fullscreen HTML
+    page = (f"<!DOCTYPE html><html><head><meta charset='utf-8'>"
+            f"<style>*{{margin:0;padding:0;}}body{{overflow:hidden;}}\n{all_css}\n</style>"
+            f"</head><body>"
+            f"<div style='position:relative;width:100vw;height:100vh;overflow:hidden;'>"
+            f"{bg}{''.join(imgs)}</div></body></html>")
+    fullscreen_file = tempfile.NamedTemporaryFile(
+        suffix=".html", delete=False, mode="w", encoding="utf-8")
+    fullscreen_file.write(page)
+    fullscreen_file.close()
+    _track_temp(fullscreen_file.name)
+    fs_url = f"/gradio_api/file={fullscreen_file.name.replace(chr(92), '/')}"
+
+    display = (
+        f'<div style="position:relative;width:100%;aspect-ratio:16/9;'
+        f'overflow:hidden;border-radius:12px;">'
+        f'{bg}'
+        f'{"".join(imgs)}'
+        f'</div>'
+        f'\n<style>\n{all_css}\n</style>'
+    )
+
+    return display, fs_url
+
+
+def add_to_aquarium(last_fish, aquarium_state):
+    """Add the last processed fish to the aquarium."""
+    if not last_fish:
+        raise gr.Error("Сначала обработай фото во вкладке Авто.")
+    aquarium_state = list(aquarium_state or [])
+    if len(aquarium_state) >= 5:
+        raise gr.Error("Максимум 5 персонажей. Нажми «Очистить» чтобы начать заново.")
+    # Pick a pattern that hasn't been used yet (if possible)
+    used_dirs = {f["swim_cfg"].get("direction") for f in aquarium_state}
+    available = [p for p in last_fish["patterns"] if p.get("direction") not in used_dirs]
+    swim_cfg = random.choice(available) if available else random.choice(last_fish["patterns"])
+
+    total_dur = swim_cfg.get("swim_duration", 8) * 2
+    # Fixed vertical offsets to guarantee separation
+    y_slots = [-20, 15, -8, 22, -15]
+    idx = len(aquarium_state)
+    fish = {
+        "apng_path": last_fish["apng_path"],
+        "swim_cfg": swim_cfg,
+        "delay": round(total_dur * (idx * 0.3 % 1), 1),
+        "size": [30, 28, 33, 25, 35][idx % 5],
+        "offset_y": y_slots[idx % 5],
+    }
+    aquarium_state.append(fish)
+    print(f"[aquarium] adding fish #{idx+1}: swim_cfg={swim_cfg}")
+    display, btn = _aquarium_html(aquarium_state)
+    return aquarium_state, display, btn
+
+
+def clear_aquarium():
+    """Remove all fish from the aquarium."""
+    return [], AQUARIUM_EMPTY, ""
+
+
+# ---------------------------------------------------------------------------
 #  Full pipeline (auto mode)
 # ---------------------------------------------------------------------------
 
 def auto_process(photo, char_id):
-    """Run align -> animate -> composite. Returns (mp4_path, composite_html)."""
+    """Run align -> animate -> composite. Returns (anim_html, composite_html, fish_data)."""
     if photo is None:
-        return None, ""
+        return "", "", None
     char = CHARS.get(char_id)
     if not char:
         raise gr.Error("Персонаж не найден.")
 
     aligned = align(photo)
     frames = _generate_frames(aligned, char)
-    mp4_path = _frames_to_mp4(frames)
     motion_patterns = char.get("motion", {})
     pattern = random.choice(list(motion_patterns.values())) if motion_patterns else None
     html = _composite_html(frames, pattern)
-    return mp4_path, html
+
+    # APNG with transparency for animation preview + aquarium
+    apng_path = _frames_to_apng(frames, max_h=400)
+    anim_html = (
+        f'<div style="display:flex;justify-content:center;padding:8px 0;">'
+        f'<img src="/gradio_api/file={apng_path}" '
+        f'style="max-height:260px;object-fit:contain;">'
+        f'</div>'
+    )
+
+    all_patterns = list(motion_patterns.values()) if motion_patterns else [{}]
+    fish_data = {"apng_path": apng_path, "patterns": all_patterns}
+
+    return anim_html, html, fish_data
 
 
 # ---------------------------------------------------------------------------
