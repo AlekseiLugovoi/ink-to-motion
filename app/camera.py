@@ -210,8 +210,10 @@ CAMERA_HEAD = """
   function stopDetection(widget) { widget._detectRunning = false; widget._detectInflight = false; setFrameColor(widget, false); }
 
   function bindAllCameraWidgets() { document.querySelectorAll('.camera-widget').forEach(bindCameraWidget); }
+  var _bindTimer = 0;
+  function bindAllCameraWidgetsDebounced() { clearTimeout(_bindTimer); _bindTimer = setTimeout(bindAllCameraWidgets, 300); }
   window.addEventListener('load', bindAllCameraWidgets);
-  new MutationObserver(bindAllCameraWidgets).observe(document.documentElement, { childList: true, subtree: true });
+  new MutationObserver(bindAllCameraWidgetsDebounced).observe(document.documentElement, { childList: true, subtree: true });
 
   // --- Auto mode: ?char=XXX opens camera immediately ---
   var params = new URLSearchParams(window.location.search);
@@ -283,8 +285,10 @@ CAMERA_HEAD = """
     });
   }
 
+  var _qrTimer = 0;
+  function generateAllQRDebounced() { clearTimeout(_qrTimer); _qrTimer = setTimeout(generateAllQR, 300); }
   window.addEventListener('load', generateAllQR);
-  new MutationObserver(function() { generateAllQR(); }).observe(document.documentElement, { childList: true, subtree: true });
+  new MutationObserver(generateAllQRDebounced).observe(document.documentElement, { childList: true, subtree: true });
 
   // --- Set char_id from URL into Gradio textbox ---
   if (autoChar) {

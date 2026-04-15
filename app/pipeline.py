@@ -463,16 +463,20 @@ def _composite_html(cached_frames, swim_cfg=None):
 (function() {{
   var fish = document.getElementById('fish');
   if (!fish) return;
-  var speed = 1, target = 1;
+  var speed = 1, target = 1, rafId = 0;
+  function loop() {{
+    speed += (target - speed) * 0.002;
+    fish.style.animationDuration = ({total_dur}/speed)+'s';
+    if (Math.abs(speed - target) > 0.001) {{
+      rafId = requestAnimationFrame(loop);
+    }}
+  }}
   document.getElementById('ocean').addEventListener('click', function() {{
     target = 1.8;
-    setTimeout(function() {{ target = 1; }}, 3000);
+    setTimeout(function() {{ target = 1; cancelAnimationFrame(rafId); loop(); }}, 3000);
+    cancelAnimationFrame(rafId);
+    loop();
   }});
-  (function loop() {{
-    speed += (target - speed) * 0.02;
-    fish.style.animationDuration = ({total_dur}/speed)+'s';
-    requestAnimationFrame(loop);
-  }})();
 }})();
 </script>"""
     return html
@@ -510,7 +514,8 @@ def _swim_keyframes(swim_cfg, name="swim", offset_y=0):
     ay = 50 + sin_d * span + offset_y
     bx = 50 + cos_d * span + offset_pct
     by = 50 - sin_d * span + offset_y
-    bob_amp = (bob[1] - bob[0]) / 2
+    bob_amp = (bob[1] - bob[0]) / 2 if isinstance(bob, (list, tuple)) and len(bob) >= 2 else 5
+    tilt_dur = tilt_dur or 3  # guard against 0 / None
     sx_fwd = -1 if flip else 1
     sx_ret = -sx_fwd
     turn = 0.025
@@ -518,7 +523,7 @@ def _swim_keyframes(swim_cfg, name="swim", offset_y=0):
     ret_start = 0.5 + turn
 
     kf_lines = []
-    n_steps = 20
+    n_steps = 80
     for i in range(n_steps + 1):
         t = i / n_steps
         if t <= fwd_end:
@@ -584,64 +589,8 @@ def _aquarium_html(fish_list):
     for idx, fish in enumerate(fish_list):
         kf_name = f"aq{uid}_{idx}"
         cfg = fish["swim_cfg"] or {}
-        direction = cfg.get("direction", 180)
-        flip = cfg.get("flip", False)
-        rot = cfg.get("rotate", 0)
-        swim_dur = cfg.get("swim_duration", 8)
-        bob = cfg.get("bob_range", [40, 55])
-        tilt_amp = cfg.get("tilt", 8)
-        tilt_dur = cfg.get("tilt_duration", 3) or 3
-        total_dur = swim_dur * 2
         oy = cfg.get("offset_y", fish.get("offset_y", 0))
-        ox = cfg.get("offset_x", 0)
-
-        dr = np.radians(direction)
-        cos_d, sin_d = np.cos(dr), np.sin(dr)
-        span = 35
-        ax = 50 - cos_d * span + ox
-        ay = 50 + sin_d * span + oy
-        bx = 50 + cos_d * span + ox
-        by = 50 - sin_d * span + oy
-        bob_amp = (bob[1] - bob[0]) / 2 if isinstance(bob, (list, tuple)) and len(bob) >= 2 else 5
-        sf = -1 if flip else 1
-        sr = -sf
-
-        # Build keyframes: 10 forward + turn + 10 return + turn = ~24 steps
-        lines = []
-        # Forward: 0% → 48%
-        for i in range(11):
-            frac = i / 10
-            pct = int(frac * 48)
-            lv = ax + (bx - ax) * frac
-            tv = ay + (by - ay) * frac
-            phase = frac * swim_dur / tilt_dur
-            tv += bob_amp * np.sin(2 * np.pi * phase)
-            tilt_v = tilt_amp * np.sin(2 * np.pi * phase)
-            r = -rot - tilt_v
-            lines.append(f"  {pct}% {{ left:{int(lv)}%; top:{int(tv)}%; "
-                         f"transform:translate(-50%,-50%) rotate({r:.0f}deg) scaleX({sf}); }}")
-        # Turn: 49% → 51%
-        lines.append(f"  49% {{ left:{int(bx)}%; top:{int(by)}%; "
-                     f"transform:translate(-50%,-50%) rotate({-rot:.0f}deg) scaleX(0); }}")
-        lines.append(f"  51% {{ left:{int(bx)}%; top:{int(by)}%; "
-                     f"transform:translate(-50%,-50%) rotate({rot:.0f}deg) scaleX(0); }}")
-        # Return: 52% → 99%
-        for i in range(11):
-            frac = i / 10
-            pct = 52 + int(frac * 47)
-            lv = bx + (ax - bx) * frac
-            tv = by + (ay - by) * frac
-            phase = frac * swim_dur / tilt_dur
-            tv += bob_amp * np.sin(2 * np.pi * phase)
-            tilt_v = tilt_amp * np.sin(2 * np.pi * phase)
-            r = rot - tilt_v
-            lines.append(f"  {pct}% {{ left:{int(lv)}%; top:{int(tv)}%; "
-                         f"transform:translate(-50%,-50%) rotate({r:.0f}deg) scaleX({sr}); }}")
-        # Close loop
-        lines.append(f"  100% {{ left:{int(ax)}%; top:{int(ay)}%; "
-                     f"transform:translate(-50%,-50%) rotate({-rot:.0f}deg) scaleX({sf}); }}")
-
-        css = f"@keyframes {kf_name} {{\n" + "\n".join(lines) + "\n}"
+        css, total_dur = _swim_keyframes(cfg, name=kf_name, offset_y=oy)
         styles.append(css)
         delay = cfg.get("delay", fish.get("delay", 0))
         size = cfg.get("size", fish.get("size", 30))
@@ -650,8 +599,7 @@ def _aquarium_html(fish_list):
             f'<img src="/gradio_api/file={apng_path}"'
             f' style="position:absolute;height:{size}%;z-index:{idx + 1};'
             f'animation:{kf_name} {total_dur}s linear infinite -{delay:.1f}s;">')
-        print(f"[aquarium] fish #{idx}: {kf_name} A=({ax},{ay}) B=({bx},{by}) "
-              f"flip={flip} dur={total_dur}s delay=-{delay}s")
+        print(f"[aquarium] fish #{idx}: {kf_name} dur={total_dur}s delay=-{delay}s")
 
     all_css = "\n".join(styles)
 
