@@ -6,6 +6,9 @@ CAMERA_HEAD = """
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <script>
 (function() {
+  if (window.__inkCameraInitialized) return;
+  window.__inkCameraInitialized = true;
+
   function getTextboxNode(elemId) {
     var root = document.getElementById(elemId);
     if (!root) return null;

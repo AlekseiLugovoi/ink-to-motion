@@ -255,18 +255,18 @@ with gr.Blocks(title="Ink-to-Motion") as demo:
     )
 
     # --- Read ?char= from URL on load (fixes QR routing to wrong character) ---
+    # Only update the dropdown; its .change() handler cascades to the rest.
+    # Updating the same outputs from both demo.load() and .change() caused
+    # a client-side render loop in Gradio 6 that froze the browser on tab switch.
     def _on_url_load(request: gr.Request):
         char_id = request.query_params.get("char", DEFAULT_CHAR)
         if char_id not in CHARS:
             char_id = DEFAULT_CHAR
-        char = CHARS[char_id]
-        template = char.get("template")
-        return char_id, char_id, template, template, _render_qr_html(char_id)
+        return char_id
 
     demo.load(
         fn=_on_url_load,
-        outputs=[auto_char_selector, auto_char_id,
-                 auto_template_preview, auto_download_btn, auto_qr_container],
+        outputs=[auto_char_selector],
     )
 
 # ---------------------------------------------------------------------------
