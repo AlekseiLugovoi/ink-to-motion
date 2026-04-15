@@ -258,14 +258,15 @@ with gr.Blocks(title="Ink-to-Motion") as demo:
     # Only update the dropdown; its .change() handler cascades to the rest.
     # Updating the same outputs from both demo.load() and .change() caused
     # a client-side render loop in Gradio 6 that froze the browser on tab switch.
-    def _on_url_load(request: gr.Request):
-        char_id = request.query_params.get("char", DEFAULT_CHAR)
-        if char_id not in CHARS:
-            char_id = DEFAULT_CHAR
-        return char_id
+    def _on_url_load(request: gr.Request, current_val):
+        char_id = request.query_params.get("char")
+        if char_id in CHARS and char_id != current_val:
+            return char_id
+        return gr.update()
 
     demo.load(
         fn=_on_url_load,
+        inputs=[auto_char_selector],
         outputs=[auto_char_selector],
     )
 
