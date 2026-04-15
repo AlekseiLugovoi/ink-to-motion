@@ -1,39 +1,176 @@
 {
-  "h2": { "angle": 2, "pivot": "h1", "freq": 1.5, "phase": 0.0 },
-  "h3": { "angle": 2, "pivot": "h2", "freq": 1.5, "phase": 0.05 },
-  "h4": { "angle": 2, "pivot": "h3", "freq": 1.5, "phase": 0.1 },
-  "h5": { "angle": 2, "pivot": "h4", "freq": 1.5, "phase": 0.15 },
-  "h6": { "angle": 2, "pivot": "h5", "freq": 1.5, "phase": 0.2 },
-
-  "b1": { "angle": 2, "pivot": "h1", "freq": 1.5, "phase": 0.0 },
-  "b2": { "angle": 2, "pivot": "b1", "freq": 1.5, "phase": 0.05 },
-  "b3": { "angle": 2, "pivot": "b2", "freq": 1.5, "phase": 0.1 },
-
-  "f3": { "angle": 4, "pivot": "b1", "freq": 3.0, "phase": 0.0 },
-  "f2": { "angle": 8, "pivot": "f3", "freq": 3.0, "phase": 0.1 },
-  "f1": { "angle": 12, "pivot": "f2", "freq": 3.0, "phase": 0.2 },
-
-  "f6": { "angle": 4, "pivot": "b1", "freq": 3.0, "phase": 0.1 },
-  "f5": { "angle": 8, "pivot": "f6", "freq": 3.0, "phase": 0.2 },
-  "f4": { "angle": 12, "pivot": "f5", "freq": 3.0, "phase": 0.3 },
-
-  "f9": { "angle": 4, "pivot": "b1", "freq": 3.0, "phase": 0.2 },
-  "f8": { "angle": 8, "pivot": "f9", "freq": 3.0, "phase": 0.3 },
-  "f7": { "angle": 12, "pivot": "f8", "freq": 3.0, "phase": 0.4 },
-
-  "f12": { "angle": 4, "pivot": "b3", "freq": 3.0, "phase": 0.3 },
-  "f11": { "angle": 8, "pivot": "f12", "freq": 3.0, "phase": 0.4 },
-  "f10": { "angle": 12, "pivot": "f11", "freq": 3.0, "phase": 0.5 },
-
-  "f15": { "angle": 4, "pivot": "b3", "freq": 3.0, "phase": 0.4 },
-  "f14": { "angle": 8, "pivot": "f15", "freq": 3.0, "phase": 0.5 },
-  "f13": { "angle": 12, "pivot": "f14", "freq": 3.0, "phase": 0.6 },
-
-  "f18": { "angle": 4, "pivot": "b3", "freq": 3.0, "phase": 0.5 },
-  "f17": { "angle": 8, "pivot": "f18", "freq": 3.0, "phase": 0.6 },
-  "f16": { "angle": 12, "pivot": "f17", "freq": 3.0, "phase": 0.7 },
-
-  "f21": { "angle": 4, "pivot": "b3", "freq": 3.0, "phase": 0.6 },
-  "f20": { "angle": 8, "pivot": "f21", "freq": 3.0, "phase": 0.7 },
-  "f19": { "angle": 12, "pivot": "f20", "freq": 3.0, "phase": 0.8 }
+  "h2": {
+    "angle": 2,
+    "pivot": "h1",
+    "freq": 2.0,
+    "phase": 0.0
+  },
+  "h3": {
+    "angle": 2,
+    "pivot": "h2",
+    "freq": 2.0,
+    "phase": 0.05
+  },
+  "h4": {
+    "angle": 2,
+    "pivot": "h3",
+    "freq": 2.0,
+    "phase": 0.1
+  },
+  "h5": {
+    "angle": 2,
+    "pivot": "h4",
+    "freq": 2.0,
+    "phase": 0.15
+  },
+  "h6": {
+    "angle": 2,
+    "pivot": "h5",
+    "freq": 2.0,
+    "phase": 0.2
+  },
+  "b1": {
+    "angle": 2,
+    "pivot": "h1",
+    "freq": 2.0,
+    "phase": 0.0
+  },
+  "b2": {
+    "angle": 2,
+    "pivot": "b1",
+    "freq": 2.0,
+    "phase": 0.05
+  },
+  "b3": {
+    "angle": 2,
+    "pivot": "b2",
+    "freq": 2.0,
+    "phase": 0.1
+  },
+  "f3": {
+    "angle": 4,
+    "pivot": "b1",
+    "freq": 3.0,
+    "phase": 0.0
+  },
+  "f2": {
+    "angle": 8,
+    "pivot": "f3",
+    "freq": 3.0,
+    "phase": 0.1
+  },
+  "f1": {
+    "angle": 12,
+    "pivot": "f2",
+    "freq": 3.0,
+    "phase": 0.2
+  },
+  "f6": {
+    "angle": 4,
+    "pivot": "b1",
+    "freq": 3.0,
+    "phase": 0.1
+  },
+  "f5": {
+    "angle": 8,
+    "pivot": "f6",
+    "freq": 3.0,
+    "phase": 0.2
+  },
+  "f4": {
+    "angle": 12,
+    "pivot": "f5",
+    "freq": 3.0,
+    "phase": 0.3
+  },
+  "f9": {
+    "angle": 4,
+    "pivot": "b1",
+    "freq": 3.0,
+    "phase": 0.2
+  },
+  "f8": {
+    "angle": 8,
+    "pivot": "f9",
+    "freq": 3.0,
+    "phase": 0.3
+  },
+  "f7": {
+    "angle": 12,
+    "pivot": "f8",
+    "freq": 3.0,
+    "phase": 0.4
+  },
+  "f12": {
+    "angle": 4,
+    "pivot": "b3",
+    "freq": 3.0,
+    "phase": 0.3
+  },
+  "f11": {
+    "angle": 8,
+    "pivot": "f12",
+    "freq": 3.0,
+    "phase": 0.4
+  },
+  "f10": {
+    "angle": 12,
+    "pivot": "f11",
+    "freq": 3.0,
+    "phase": 0.5
+  },
+  "f15": {
+    "angle": 4,
+    "pivot": "b3",
+    "freq": 3.0,
+    "phase": 0.4
+  },
+  "f14": {
+    "angle": 8,
+    "pivot": "f15",
+    "freq": 3.0,
+    "phase": 0.5
+  },
+  "f13": {
+    "angle": 12,
+    "pivot": "f14",
+    "freq": 3.0,
+    "phase": 0.6
+  },
+  "f18": {
+    "angle": 4,
+    "pivot": "b3",
+    "freq": 3.0,
+    "phase": 0.5
+  },
+  "f17": {
+    "angle": 8,
+    "pivot": "f18",
+    "freq": 3.0,
+    "phase": 0.6
+  },
+  "f16": {
+    "angle": 12,
+    "pivot": "f17",
+    "freq": 3.0,
+    "phase": 0.7
+  },
+  "f21": {
+    "angle": 4,
+    "pivot": "b3",
+    "freq": 3.0,
+    "phase": 0.6
+  },
+  "f20": {
+    "angle": 8,
+    "pivot": "f21",
+    "freq": 3.0,
+    "phase": 0.7
+  },
+  "f19": {
+    "angle": 12,
+    "pivot": "f20",
+    "freq": 3.0,
+    "phase": 0.8
+  }
 }
