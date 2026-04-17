@@ -171,10 +171,24 @@ CAMERA_HEAD = """
     window.addEventListener('beforeunload', function() { stopCamera(widget); });
   }
 
-  function setFrameColor(widget, found) {
+  function setFrameColor(widget, count) {
     var rects = widget.querySelectorAll('.camera-frame-overlay svg rect[stroke]');
-    var color = found ? 'rgba(34,197,94,0.95)' : 'rgba(180,180,180,0.8)';
+    var hint = widget.querySelector('.camera-hint');
+    var snap = widget.querySelector('[data-role="camera-snap"]');
+    var color, text;
+    if (count >= 4) {
+      color = 'rgba(34,197,94,0.95)';
+      text = '\u0412\u0441\u0435 \u043c\u0435\u0442\u043a\u0438 \u043d\u0430\u0439\u0434\u0435\u043d\u044b \u2014 \u0444\u043e\u0442\u043a\u0430\u0439!';
+    } else if (count >= 1) {
+      color = 'rgba(239,68,68,0.9)';
+      text = '\u041c\u0435\u0442\u043a\u0438: ' + count + '/4 \u2014 \u043f\u043e\u043a\u0430\u0436\u0438 \u0432\u0441\u0435 \u0443\u0433\u043b\u044b';
+    } else {
+      color = 'rgba(180,180,180,0.8)';
+      text = '\u041f\u043e\u043c\u0435\u0441\u0442\u0438 \u0440\u0438\u0441\u0443\u043d\u043e\u043a \u0432 \u0440\u0430\u043c\u043a\u0443';
+    }
     rects.forEach(function(r) { r.setAttribute('stroke', color); });
+    if (hint) hint.textContent = text;
+    if (snap) snap.style.borderColor = count >= 4 ? 'rgba(34,197,94,0.95)' : 'white';
   }
 
   function startDetection(widget) {
@@ -200,8 +214,7 @@ CAMERA_HEAD = """
             var data = await resp.json();
             if (widget._detectRunning) {
               var count = Number(data.count || 0);
-              setFrameColor(widget, count >= 1);
-              if (status) status.textContent = count >= 1 ? ('ArUco: ' + count) : '';
+              setFrameColor(widget, count);
             }
           }
         } catch(e) {} finally { widget._detectInflight = false; }
@@ -210,7 +223,7 @@ CAMERA_HEAD = """
     loop();
   }
 
-  function stopDetection(widget) { widget._detectRunning = false; widget._detectInflight = false; setFrameColor(widget, false); }
+  function stopDetection(widget) { widget._detectRunning = false; widget._detectInflight = false; setFrameColor(widget, 0); }
 
   function bindAllCameraWidgets() { document.querySelectorAll('.camera-widget').forEach(bindCameraWidget); }
   var _bindTimer = 0;
@@ -218,11 +231,9 @@ CAMERA_HEAD = """
   window.addEventListener('load', bindAllCameraWidgets);
   new MutationObserver(bindAllCameraWidgetsDebounced).observe(document.documentElement, { childList: true, subtree: true });
 
-  // --- Auto mode: ?char=XXX opens camera immediately ---
-  var params = new URLSearchParams(window.location.search);
-  var autoChar = params.get('char');
-  if (autoChar) {
-    window.__inkAutoChar = autoChar;
+  // --- Auto mode: on mobile, auto-open camera for the Auto tab ---
+  var _isMobileDevice = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+  if (_isMobileDevice) {
     (function waitForAutoWidget() {
       function tryOpen() {
         var w = document.querySelector('.camera-widget[data-target="camera-data-auto"]');
@@ -274,7 +285,8 @@ CAMERA_HEAD = """
       document.querySelectorAll('[data-qr-char]:not([data-qr-done])').forEach(function(el) {
         el.dataset.qrDone = '1';
         var charId = el.dataset.qrChar;
-        var url = window.location.origin + window.location.pathname + '?char=' + charId;
+        var url = window.location.origin + window.location.pathname;
+        if (charId) url += '?char=' + charId;
         var canvas = document.createElement('canvas');
         renderQR(canvas, url, 140);
         el.style.display = 'flex';
@@ -293,15 +305,6 @@ CAMERA_HEAD = """
   window.addEventListener('load', generateAllQR);
   new MutationObserver(generateAllQRDebounced).observe(document.documentElement, { childList: true, subtree: true });
 
-  // --- Set char_id from URL into Gradio textbox ---
-  if (autoChar) {
-    (function waitForCharBox() {
-      function trySet() { return setTextboxValue('auto-char-id', autoChar); }
-      if (trySet()) return;
-      new MutationObserver(function(_, obs) { if (trySet()) obs.disconnect(); })
-        .observe(document.documentElement, { childList: true, subtree: true });
-    })();
-  }
 })();
 </script>
 """
@@ -311,6 +314,7 @@ def make_camera_panel(data_target="camera-data"):
     mid = data_target.replace("-", "_")
     return f"""
 <div class="camera-widget" data-target="{data_target}">
+  <button type="button" class="camera-open-btn" data-role="camera-open">\u0421\u0434\u0435\u043b\u0430\u0442\u044c \u0444\u043e\u0442\u043e</button>
   <div class="camera-status" data-role="camera-status"></div>
   <div class="camera-stage" data-role="camera-stage" hidden>
     <div class="camera-stage-inner">
@@ -326,7 +330,7 @@ def make_camera_panel(data_target="camera-data"):
             </defs>
             <rect width="100" height="100" fill="rgba(0,0,0,0.5)" mask="url(#fmask_{mid})"/>
             <rect x="22" y="8" width="56" height="84" rx="3" ry="3"
-                  fill="none" stroke="rgba(180,180,180,0.8)" stroke-width="0.4"/>
+                  fill="none" stroke="rgba(180,180,180,0.8)" stroke-width="0.8"/>
           </svg>
         </div>
       </div>
@@ -341,8 +345,14 @@ def make_camera_panel(data_target="camera-data"):
 
 CSS = """
 #main-wrap { max-width: 640px !important; margin: auto !important; }
-#camera-data, #camera-data-auto, #auto-char-id { display: none !important; }
+#camera-data, #camera-data-auto { display: none !important; }
 .camera-widget { display: grid; gap: 12px; }
+.camera-widget .camera-open-btn {
+  padding: 10px 20px; border: 2px solid #f97316; border-radius: 10px;
+  background: #fff7ed; color: #c2410c; font-size: 15px; font-weight: 600;
+  cursor: pointer; transition: background 0.2s;
+}
+.camera-widget .camera-open-btn:hover { background: #fed7aa; }
 .camera-widget .camera-status { font-size: 13px; color: #4b5563; }
 .camera-widget .camera-stage {
   position: fixed; inset: 0; z-index: 9999; background: #000;

@@ -3,6 +3,14 @@
 Рисунок на бумаге → оцифровка → анимация \
 DEMO: https://ink-to-motion-production.up.railway.app
 
+## Структура проекта
+
+| Папка | Назначение |
+|---|---|
+| `app/` | Продакшн — Gradio-приложение |
+| `pipeline/` | Рабочий пайплайн: ноутбуки + `utils.py` (шаблоны, выравнивание, цвет, анимация) |
+| `rnd/` | R&D — исследование подходов (каждый ноутбук = одна тема) |
+
 ## Требования к железу (app)
 
 | | Минимум | Рекомендуется |
@@ -27,16 +35,25 @@ DEMO: https://ink-to-motion-production.up.railway.app
 
 | SVG (mask.svg) | Шаблон для печати |
 |---|---|
-| <img src="preprocessing/templates/001/mask.svg" width="300"> | <img src="preprocessing/templates/001/template.png" width="300"> |
+| <img src="pipeline/templates/001/mask.svg" width="300"> | <img src="pipeline/templates/001/template.png" width="300"> |
 
 
-### 1. Выравнивание
+### 1. Выравнивание + определение персонажа
 
 - Фото → детекция ArUco → гомография → warp на координаты шаблона
+- Персонаж определяется автоматически: 3 угловых маркера общие (TL/TR/BR), 4-й (BL) уникален для каждого персонажа
+
+| Персонаж | Marker IDs (TL, TR, BR, **BL**) |
+|---|---|
+| 001 | `[0, 1, 2, 3]` |
+| 002 | `[0, 1, 2, 4]` |
+| 003 | `[0, 1, 2, 5]` |
+
+> Лимит словаря `DICT_4X4_50` — 47 персонажей (50 − 3 общих маркера). Для большего числа — переключить на `DICT_4X4_100`/`DICT_4X4_250` в `app/config.py`.
 
 | Фото | Выровненное |
 |---|---|
-| <img src="preprocessing/output/001_photo_v2_rotated.jpg" width="300"> | <img src="preprocessing/output/001_photo_v2_aligned.jpg" width="300"> |
+| <img src="pipeline/output/001_photo_v2_rotated.jpg" width="300"> | <img src="pipeline/output/001_photo_v2_aligned.jpg" width="300"> |
 
 ### 1.1. Коррекция цвета
 
@@ -58,7 +75,7 @@ SVG path'ы → полигоны → painter's algorithm:
 
 | Триангуляция | Анимация |
 |---|---|
-| <img src="preprocessing/output/img05_triangulation.png" width="250"> | <img src="preprocessing/output/img05_anim.gif" width="250"> |
+| <img src="pipeline/output/img05_triangulation.png" width="250"> | <img src="pipeline/output/img05_anim.gif" width="250"> |
 
 ### 4. Наложение на фон
 
@@ -147,12 +164,12 @@ SVG path'ы → полигоны → painter's algorithm:
 
 | Контур | Выровненное фото | Результат |
 |---|---|---|
-| <img src="preprocessing/input/img01_raw.jpg" width="250"> | <img src="preprocessing/output/img01_photo_aligned.jpg" width="250"> | <img src="preprocessing/output/img01_photo_aligned_digitized.png" width="250"> |
+| <img src="pipeline/input/img01_raw.jpg" width="250"> | <img src="pipeline/output/img01_photo_aligned.jpg" width="250"> | <img src="pipeline/output/img01_photo_aligned_digitized.png" width="250"> |
 
 **Флоу B — произвольный рисунок (rembg):**
 
 | Кроп | Сегментация |
 |---|---|
-| <img src="preprocessing/output/img04_photo_aligned.jpg" width="300"> | <img src="preprocessing/output/img04_photo_aligned_digitized.png" width="300"> |
+| <img src="pipeline/output/img04_photo_aligned.jpg" width="300"> | <img src="pipeline/output/img04_photo_aligned_digitized.png" width="300"> |
 
 </details>

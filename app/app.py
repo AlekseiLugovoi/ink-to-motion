@@ -51,9 +51,9 @@ with gr.Blocks(title="Ink-to-Motion") as demo:
         # === Авто ===
         with gr.Tab("Авто"):
             with gr.Column(elem_id="main-wrap"):
-                gr.Markdown("Выбери персонажа, отсканируй QR или загрузи фото.")
+                gr.Markdown("Распечатай шаблон, раскрась и сфотографируй.")
 
-                with gr.Accordion("Шаг 1. Выбери персонажа", open=True):
+                with gr.Accordion("Шаг 1. Распечатай шаблон", open=True):
                     auto_char_selector = gr.Dropdown(
                         choices=char_choices,
                         value=DEFAULT_CHAR,
@@ -73,15 +73,37 @@ with gr.Blocks(title="Ink-to-Motion") as demo:
                         variant="secondary",
                     )
 
-                auto_char_id = gr.Textbox(
-                    value=DEFAULT_CHAR or "", elem_id="auto-char-id", container=False,
-                )
-
-                with gr.Accordion("Шаг 2. Отсканируй QR или загрузи фото", open=True):
+                with gr.Accordion("Шаг 2. Ручной режим (старые шаблоны)", open=False):
+                    gr.Markdown("Для старых шаблонов с QR на каждого персонажа. Выбери того же персонажа, что на распечатке.")
+                    manual_char_selector = gr.Dropdown(
+                        choices=char_choices,
+                        value=DEFAULT_CHAR,
+                        label="Персонаж",
+                        show_label=False,
+                    )
                     with gr.Row():
                         with gr.Column(scale=1, min_width=0):
-                            auto_qr_container = gr.HTML(
+                            manual_qr = gr.HTML(
                                 _render_qr_html(DEFAULT_CHAR),
+                                elem_classes=["qr-center-block"],
+                            )
+                        with gr.Column(scale=1, min_width=0):
+                            gr.HTML(make_camera_panel("camera-data-manual"))
+                            camera_data_manual = gr.Textbox(elem_id="camera-data-manual", container=False)
+                            image_in_manual = gr.Image(
+                                type="pil", sources=["upload"],
+                                height=140, show_label=False,
+                            )
+                            camera_data_manual.change(
+                                fn=decode_camera_photo, inputs=camera_data_manual, outputs=image_in_manual,
+                            )
+
+                with gr.Accordion("Шаг 3. Автоопределение (новые шаблоны)", open=True):
+                    gr.Markdown("Универсальный QR — персонаж определится по маркерам на фото.")
+                    with gr.Row():
+                        with gr.Column(scale=1, min_width=0):
+                            gr.HTML(
+                                _render_qr_html(),
                                 elem_classes=["qr-center-block"],
                             )
                         with gr.Column(scale=1, min_width=0):
@@ -95,10 +117,12 @@ with gr.Blocks(title="Ink-to-Motion") as demo:
                                 fn=decode_camera_photo, inputs=camera_data_auto, outputs=image_in_auto,
                             )
 
-                with gr.Accordion("Шаг 3. Анимация", open=True):
+                auto_detected = gr.Markdown()
+
+                with gr.Accordion("Шаг 4. Анимация", open=True):
                     auto_gif = gr.HTML()
 
-                with gr.Accordion("Шаг 4. На фоне", open=True):
+                with gr.Accordion("Шаг 5. На фоне", open=True):
                     auto_composite = gr.HTML()
                     add_aquarium_btn = gr.Button(
                         "Добавить в аквариум", variant="secondary",
@@ -107,12 +131,34 @@ with gr.Blocks(title="Ink-to-Motion") as demo:
                 auto_char_selector.change(
                     fn=_on_auto_char_change,
                     inputs=auto_char_selector,
-                    outputs=[auto_char_id, auto_template_preview, auto_download_btn, auto_qr_container],
+                    outputs=[auto_template_preview, auto_download_btn],
                 )
 
+                manual_char_selector.change(
+                    fn=lambda cid: _render_qr_html(cid),
+                    inputs=manual_char_selector,
+                    outputs=manual_qr,
+                )
+
+                def _auto_process_wrap(photo):
+                    anim_html, composite_html, fish_data, char_id = auto_process(photo)
+                    info = f"Определён персонаж: **{char_id}**" if char_id else ""
+                    return info, anim_html, composite_html, fish_data
+
+                def _manual_process_wrap(photo, selected_char):
+                    anim_html, composite_html, fish_data, char_id = auto_process(photo, selected_char)
+                    info = f"Используется персонаж: **{char_id}** (ручной выбор)" if char_id else ""
+                    return info, anim_html, composite_html, fish_data
+
                 image_in_auto.change(
-                    fn=auto_process, inputs=[image_in_auto, auto_char_id],
-                    outputs=[auto_gif, auto_composite, last_fish_state],
+                    fn=_auto_process_wrap,
+                    inputs=[image_in_auto],
+                    outputs=[auto_detected, auto_gif, auto_composite, last_fish_state],
+                )
+                image_in_manual.change(
+                    fn=_manual_process_wrap,
+                    inputs=[image_in_manual, manual_char_selector],
+                    outputs=[auto_detected, auto_gif, auto_composite, last_fish_state],
                 )
 
         # === Аквариум ===
@@ -197,10 +243,20 @@ with gr.Blocks(title="Ink-to-Motion") as demo:
                         fn=decode_camera_photo, inputs=camera_data, outputs=image_in,
                     )
 
+                step_char_state = gr.State("")
+
                 with gr.Accordion("Шаг 3. Выравнивание", open=False):
                     align_btn = gr.Button("Выровнять", variant="primary")
                     aligned_out = gr.Image(show_label=False, interactive=False, height=300)
-                    align_btn.click(fn=align, inputs=image_in, outputs=aligned_out)
+
+                    def _step_align(image):
+                        aligned, char_id = align(image)
+                        return aligned, char_id
+
+                    align_btn.click(
+                        fn=_step_align, inputs=image_in,
+                        outputs=[aligned_out, step_char_state],
+                    )
 
                 with gr.Accordion("Шаг 4. Перенос цвета", open=False):
                     gr.Markdown("Цвета с фото переносятся на оригинального персонажа по маске.")
@@ -208,7 +264,7 @@ with gr.Blocks(title="Ink-to-Motion") as demo:
                     color_out = gr.Image(label="Результат", interactive=False, height=300)
                     ct_btn.click(
                         fn=do_color_transfer,
-                        inputs=[aligned_out, char_selector],
+                        inputs=[aligned_out, step_char_state],
                         outputs=color_out,
                     )
 
@@ -219,7 +275,7 @@ with gr.Blocks(title="Ink-to-Motion") as demo:
                     anim_out = gr.Video(show_label=False, autoplay=True, loop=True)
                     anim_btn.click(
                         fn=do_animation,
-                        inputs=[aligned_out, char_selector],
+                        inputs=[aligned_out, step_char_state],
                         outputs=[anim_out, frames_state],
                     )
 
@@ -230,7 +286,7 @@ with gr.Blocks(title="Ink-to-Motion") as demo:
                     composite_file = gr.File(label="Скачать HTML")
                     composite_btn.click(
                         fn=do_composite,
-                        inputs=[frames_state, char_selector],
+                        inputs=[frames_state, step_char_state],
                         outputs=[composite_out, composite_file],
                     )
 
@@ -254,19 +310,15 @@ with gr.Blocks(title="Ink-to-Motion") as demo:
         outputs=[aquarium_state, aquarium_display, fullscreen_url, aquarium_counter],
     )
 
-    # --- Read ?char= from URL on load (fixes QR routing to wrong character) ---
-    # Only update the dropdown; its .change() handler cascades to the rest.
-    # Updating the same outputs from both demo.load() and .change() caused
-    # a client-side render loop in Gradio 6 that froze the browser on tab switch.
-    def _on_url_load(request: gr.Request, current_val):
+    # --- Read ?char= from URL on load (pre-selects template for download) ---
+    def _on_url_load(request: gr.Request):
         char_id = request.query_params.get("char")
-        if char_id in CHARS and char_id != current_val:
+        if char_id and char_id in CHARS:
             return char_id
         return gr.update()
 
     demo.load(
         fn=_on_url_load,
-        inputs=[auto_char_selector],
         outputs=[auto_char_selector],
     )
 

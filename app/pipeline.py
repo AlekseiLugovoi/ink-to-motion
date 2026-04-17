@@ -12,7 +12,7 @@ from xml.etree import ElementTree as ET
 
 try:
     from .config import (
-        ARUCO_DICT, MARKER_IDS,
+        ARUCO_DICT, MARKER_IDS, MARKER_IDS_BASE, BL_TO_CHAR,
         CANVAS_H, CANVAS_W,
         MARKER_PX, MARGIN, CONTENT_PAD, CONTENT_SCALE,
         FPS, DURATION,
@@ -22,7 +22,7 @@ try:
     from .arap import animate_arap as _animate_arap
 except ImportError:
     from config import (
-        ARUCO_DICT, MARKER_IDS,
+        ARUCO_DICT, MARKER_IDS, MARKER_IDS_BASE, BL_TO_CHAR,
         CANVAS_H, CANVAS_W,
         MARKER_PX, MARGIN, CONTENT_PAD, CONTENT_SCALE,
         FPS, DURATION,
@@ -87,7 +87,8 @@ def detect_aruco(frame_b64):
         _, ids, _ = _aruco_detector.detectMarkers(img)
         if ids is None:
             return "0"
-        return str(len(set(ids.flatten().tolist()) & {0, 1, 2, 3}))
+        known = set(MARKER_IDS_BASE) | set(BL_TO_CHAR.keys())
+        return str(len(set(ids.flatten().tolist()) & known))
     except Exception:
         return "0"
 
@@ -106,7 +107,12 @@ def _marker_centers():
     return [[px + MARKER_PX / 2, py + MARKER_PX / 2] for px, py in positions]
 
 
-def align(image):
+def align(image, force_char_id=None):
+    """Align photo by ArUco markers. Returns (aligned_image, char_id).
+
+    If force_char_id is set — use it (manual mode, для старых шаблонов).
+    Иначе — определяется автоматически по BL-маркеру.
+    """
     img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
     detector = cv2.aruco.ArucoDetector(
         cv2.aruco.getPredefinedDictionary(ARUCO_DICT)
@@ -121,13 +127,30 @@ def align(image):
     detected = {}
     for i, mid in enumerate(ids.flatten()):
         detected[int(mid)] = corners[i][0].mean(axis=0)
-    src_pts = np.array([detected[mid] for mid in MARKER_IDS], dtype=np.float32)
+
+    found_ids = set(detected.keys())
+    bl_ids = found_ids - set(MARKER_IDS_BASE)
+    if not bl_ids:
+        raise gr.Error("Не удалось определить BL-маркер.")
+    bl_id = bl_ids.pop()
+
+    if force_char_id:
+        if force_char_id not in CHARS:
+            raise gr.Error(f"Персонаж {force_char_id} не найден.")
+        char_id = force_char_id
+    else:
+        char_id = BL_TO_CHAR.get(bl_id)
+        if not char_id:
+            raise gr.Error(f"Неизвестный маркер (ID {bl_id}). Проверь шаблон.")
+
+    marker_ids = MARKER_IDS_BASE + [bl_id]
+    src_pts = np.array([detected[mid] for mid in marker_ids], dtype=np.float32)
     dst_pts = np.array(_marker_centers(), dtype=np.float32)
     M = cv2.getPerspectiveTransform(src_pts, dst_pts)
     aligned = cv2.warpPerspective(
         img, M, (CANVAS_W, CANVAS_H), borderValue=(255, 255, 255)
     )
-    return Image.fromarray(cv2.cvtColor(aligned, cv2.COLOR_BGR2RGB))
+    return Image.fromarray(cv2.cvtColor(aligned, cv2.COLOR_BGR2RGB)), char_id
 
 
 # ---------------------------------------------------------------------------
@@ -666,15 +689,13 @@ def clear_aquarium():
 #  Full pipeline (auto mode)
 # ---------------------------------------------------------------------------
 
-def auto_process(photo, char_id):
-    """Run align -> animate -> composite. Returns (anim_html, composite_html, fish_data)."""
+def auto_process(photo, force_char_id=None):
+    """Run align -> animate -> composite. Returns (anim_html, composite_html, fish_data, char_id)."""
     if photo is None:
-        return "", "", None
-    char = CHARS.get(char_id)
-    if not char:
-        raise gr.Error("Персонаж не найден.")
+        return "", "", None, ""
 
-    aligned = align(photo)
+    aligned, char_id = align(photo, force_char_id=force_char_id)
+    char = CHARS[char_id]
     frames = _generate_frames(aligned, char)
     motion_patterns = char.get("motion", {})
     pattern = random.choice(list(motion_patterns.values())) if motion_patterns else None
@@ -692,21 +713,17 @@ def auto_process(photo, char_id):
     all_patterns = list(motion_patterns.values()) if motion_patterns else [{}]
     fish_data = {"apng_path": apng_path, "patterns": all_patterns}
 
-    return anim_html, html, fish_data
+    return anim_html, html, fish_data, char_id
 
 
 # ---------------------------------------------------------------------------
 #  Step-by-step handlers
 # ---------------------------------------------------------------------------
 
-def _render_qr_html(char_id):
-    if not char_id or char_id not in CHARS:
-        return ""
-    return (
-        f'<div class="qr-card">'
-        f'  <div data-qr-char="{char_id}"></div>'
-        f'</div>'
-    )
+def _render_qr_html(char_id=None):
+    """QR card. With char_id → link to ?char=XXX. Without → link to base URL."""
+    attr = f'data-qr-char="{char_id}"' if char_id else 'data-qr-char=""'
+    return f'<div class="qr-card"><div {attr}></div></div>'
 
 
 def _render_preview_with_skeleton(char):
@@ -740,12 +757,12 @@ def _generate_animation_preview(char):
 
 def _on_auto_char_change(char_id):
     if not char_id:
-        return "", None, None, ""
+        return None, None
     char = CHARS.get(char_id)
     if not char:
-        return "", None, None, ""
+        return None, None
     template = char.get("template")
-    return char_id, template, template, _render_qr_html(char_id)
+    return template, template
 
 
 def _on_step_char_change(char_id):

@@ -12,15 +12,18 @@ ASSETS_DIR = APP_DIR / "assets"
 TEMPLATES_DIR = (ASSETS_DIR / "templates").resolve()
 BACKGROUND_PATH = str((TEMPLATES_DIR / "background.jpg").resolve())
 _bg_video_assets = TEMPLATES_DIR / "background.mov"
-_bg_video_preproc = REPO_DIR / "preprocessing" / "templates" / "background.mov"
+_bg_video_preproc = REPO_DIR / "pipeline" / "templates" / "background.mov"
 BACKGROUND_VIDEO_PATH = str(_bg_video_assets.resolve()) if _bg_video_assets.exists() else str(_bg_video_preproc.resolve())
 
 # ---------------------------------------------------------------------------
 #  Template geometry (A4 @ 150 DPI)
 # ---------------------------------------------------------------------------
 
+# 47 chars max; for more swap to DICT_4X4_100 (97) or DICT_4X4_250 (247)
 ARUCO_DICT = cv2.aruco.DICT_4X4_50
-MARKER_IDS = [0, 1, 2, 3]
+# TL, TR, BR stay fixed; BL encodes character (3 → 001, 4 → 002, 5 → 003, …)
+MARKER_IDS_BASE = [0, 1, 2]  # TL, TR, BR — shared by all characters
+MARKER_IDS = [0, 1, 2, 3]   # default (char 001), overridden per character
 CANVAS_H, CANVAS_W = 1240, 1754
 MARKER_PX, MARGIN, CONTENT_PAD = 80, 60, 10
 CONTENT_SCALE = 0.8
@@ -70,6 +73,7 @@ def _parse_motion(raw):
     return {"default": merged}
 
 CHARS = {}
+_next_bl_id = MARKER_IDS_BASE[-1] + 1  # first BL id = 3
 for _char_dir in sorted(TEMPLATES_DIR.iterdir()):
     if not _char_dir.is_dir():
         continue
@@ -85,12 +89,18 @@ for _char_dir in sorted(TEMPLATES_DIR.iterdir()):
             with open(_char_dir / "motion.json", encoding="utf-8") as _f:
                 _motion_raw = json.load(_f)
         _motion = _parse_motion(_motion_raw)
+        _marker_ids = MARKER_IDS_BASE + [_next_bl_id]
         CHARS[_char_id] = {
             "svg": str((_char_dir / "mask.svg").resolve()),
             "skeleton": _skel,
             "animation": _anim,
             "motion": _motion,
             "template": str((_char_dir / "template.png").resolve()) if (_char_dir / "template.png").exists() else None,
+            "marker_ids": _marker_ids,
         }
+        _next_bl_id += 1
 
 DEFAULT_CHAR = list(CHARS.keys())[0] if CHARS else None
+
+# Reverse lookup: BL marker id → char_id
+BL_TO_CHAR = {c["marker_ids"][3]: cid for cid, c in CHARS.items()}
