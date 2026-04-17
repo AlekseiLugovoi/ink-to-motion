@@ -174,6 +174,7 @@ def _draw_hatching(canvas, drawing_bbox, marker_positions, marker_px,
 def generate_template(
     output_path="output/template.png",
     canvas_size=(1240, 1754),
+    marker_ids=None,
     marker_px=80,
     margin=60,
     content_pad=10,
@@ -181,7 +182,7 @@ def generate_template(
     hatch_spacing=10,
     hatch_color=(200, 200, 200),
     corner_radius=20,
-    title="Sketch Factory",
+    title="SKETCH FACTORY",
 ):
     """Generate blank printable A4 template with ArUco markers and decoration.
 
@@ -194,6 +195,7 @@ def generate_template(
     drawing_bbox = [inner, inner, canvas_w - 2 * inner, canvas_h - 2 * inner]
 
     # ArUco markers
+    mids = marker_ids if marker_ids is not None else MARKER_IDS
     aruco_dict = cv2.aruco.getPredefinedDictionary(ARUCO_DICT)
     positions = [
         (margin, margin),
@@ -205,7 +207,7 @@ def generate_template(
     marker_border = 6
     marker_radius = 8
     marker_gray = 70
-    for mid, (px, py) in zip(MARKER_IDS, positions):
+    for mid, (px, py) in zip(mids, positions):
         marker_img = cv2.aruco.generateImageMarker(aruco_dict, mid, marker_px)
         marker_bgr = cv2.cvtColor(marker_img, cv2.COLOR_GRAY2BGR)
         marker_bgr[marker_img == 0] = marker_gray
@@ -241,10 +243,13 @@ def generate_template(
     # title
     if title:
         font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 3.0
+        font_thick = 4
+        (tw, th), baseline = cv2.getTextSize(title, font, font_scale, font_thick)
         text_x = margin + marker_px + 30
-        text_y = margin + marker_px - 10
+        text_y = margin + marker_px // 2 + th // 2
         cv2.putText(canvas, title, (text_x, text_y), font,
-                    1.8, (120, 120, 120), 3, cv2.LINE_AA)
+                    font_scale, (120, 120, 120), font_thick, cv2.LINE_AA)
 
     # save
     out = Path(output_path)
