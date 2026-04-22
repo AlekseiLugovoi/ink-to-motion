@@ -23,7 +23,8 @@ from config import (
 )
 from arap import animate_arap as _animate_arap
 
-_SEG_MODEL = "birefnet-general"
+_SEG_MODEL = "birefnet-general-lite"   # lite-вариант для Railway (~180 MB)
+# _SEG_MODEL = "birefnet-general"      # целевая модель (~1 GB, нужен Pro план с RAM)
 _rembg_session_cache = None
 
 
