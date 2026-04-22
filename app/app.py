@@ -4,28 +4,16 @@ import gradio as gr
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
-try:
-    from .config import CHARS, DEFAULT_CHAR, ASSETS_DIR, BACKGROUND_VIDEO_PATH
-    from .pipeline import (
-        decode_camera_photo, detect_aruco, align,
-        do_color_transfer, do_animation, do_composite,
-        auto_process, add_to_aquarium, clear_aquarium,
-        _on_auto_char_change, _on_step_char_change, _render_qr_html,
-        _render_preview_with_skeleton, _generate_animation_preview,
-        AQUARIUM_EMPTY,
-    )
-    from .camera import CAMERA_HEAD, make_camera_panel, CSS
-except ImportError:
-    from config import CHARS, DEFAULT_CHAR, ASSETS_DIR, BACKGROUND_VIDEO_PATH
-    from pipeline import (
-        decode_camera_photo, detect_aruco, align,
-        do_color_transfer, do_animation, do_composite,
-        auto_process, add_to_aquarium, clear_aquarium,
-        _on_auto_char_change, _on_step_char_change, _render_qr_html,
-        _render_preview_with_skeleton, _generate_animation_preview,
-        AQUARIUM_EMPTY,
-    )
-    from camera import CAMERA_HEAD, make_camera_panel, CSS
+from config import CHARS, DEFAULT_CHAR, ASSETS_DIR, BACKGROUND_VIDEO_PATH
+from pipeline import (
+    decode_camera_photo, detect_aruco, align,
+    do_color_transfer, do_animation, do_composite,
+    auto_process, add_to_aquarium, clear_aquarium,
+    _on_auto_char_change, _on_step_char_change, _render_qr_html,
+    _render_preview_with_skeleton, _generate_animation_preview,
+    AQUARIUM_EMPTY,
+)
+from camera import CAMERA_HEAD, make_camera_panel, CSS
 
 # ---------------------------------------------------------------------------
 #  Initial values for default character
@@ -140,23 +128,23 @@ with gr.Blocks(title="Ink-to-Motion") as demo:
                     outputs=manual_qr,
                 )
 
-                def _auto_process_wrap(photo):
-                    anim_html, composite_html, fish_data, char_id = auto_process(photo)
-                    info = f"Определён персонаж: **{char_id}**" if char_id else ""
-                    return info, anim_html, composite_html, fish_data
-
-                def _manual_process_wrap(photo, selected_char):
+                def _process_photo(photo, selected_char=None):
                     anim_html, composite_html, fish_data, char_id = auto_process(photo, selected_char)
-                    info = f"Используется персонаж: **{char_id}** (ручной выбор)" if char_id else ""
+                    if not char_id:
+                        info = ""
+                    elif selected_char:
+                        info = f"Используется персонаж: **{char_id}** (ручной выбор)"
+                    else:
+                        info = f"Определён персонаж: **{char_id}**"
                     return info, anim_html, composite_html, fish_data
 
                 image_in_auto.change(
-                    fn=_auto_process_wrap,
+                    fn=lambda p: _process_photo(p),
                     inputs=[image_in_auto],
                     outputs=[auto_detected, auto_gif, auto_composite, last_fish_state],
                 )
                 image_in_manual.change(
-                    fn=_manual_process_wrap,
+                    fn=_process_photo,
                     inputs=[image_in_manual, manual_char_selector],
                     outputs=[auto_detected, auto_gif, auto_composite, last_fish_state],
                 )

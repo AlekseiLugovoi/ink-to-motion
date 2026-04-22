@@ -1,35 +1,38 @@
+import atexit
+import base64
 import io
 import os
-import base64
 import random
 import tempfile
 import time
 import cv2
+import imageio_ffmpeg
 import numpy as np
 import gradio as gr
 from PIL import Image
-from xml.etree import ElementTree as ET
+from rembg import new_session, remove
 
-try:
-    from .config import (
-        ARUCO_DICT, MARKER_IDS, MARKER_IDS_BASE, BL_TO_CHAR,
-        CANVAS_H, CANVAS_W,
-        MARKER_PX, MARGIN, CONTENT_PAD, CONTENT_SCALE,
-        FPS, DURATION,
-        BACKGROUND_PATH, BACKGROUND_VIDEO_PATH,
-        CHARS,
-    )
-    from .arap import animate_arap as _animate_arap
-except ImportError:
-    from config import (
-        ARUCO_DICT, MARKER_IDS, MARKER_IDS_BASE, BL_TO_CHAR,
-        CANVAS_H, CANVAS_W,
-        MARKER_PX, MARGIN, CONTENT_PAD, CONTENT_SCALE,
-        FPS, DURATION,
-        BACKGROUND_PATH, BACKGROUND_VIDEO_PATH,
-        CHARS,
-    )
-    from arap import animate_arap as _animate_arap
+from svg import SvgCharacter
+from config import (
+    ARUCO_DICT, MARKER_IDS_BASE, BL_TO_CHAR,
+    CANVAS_H, CANVAS_W,
+    MARKER_PX, MARGIN, CONTENT_PAD, CONTENT_SCALE,
+    FPS, DURATION,
+    BACKGROUND_PATH, BACKGROUND_VIDEO_PATH,
+    CHARS,
+)
+from arap import animate_arap as _animate_arap
+
+_SEG_MODEL = "birefnet-general"
+_rembg_session_cache = None
+
+
+def _get_rembg_session():
+    """Lazy init + singleton — модель тяжёлая, грузим один раз."""
+    global _rembg_session_cache
+    if _rembg_session_cache is None:
+        _rembg_session_cache = new_session(_SEG_MODEL)
+    return _rembg_session_cache
 
 # ---------------------------------------------------------------------------
 #  Temp file tracking & cleanup
@@ -39,13 +42,11 @@ _temp_files: list[str] = []
 
 
 def _track_temp(path: str) -> str:
-    """Register a temp file for later cleanup."""
     _temp_files.append(path)
     return path
 
 
 def _cleanup_temp():
-    """Delete all tracked temp files."""
     for p in _temp_files:
         try:
             os.remove(p)
@@ -54,7 +55,6 @@ def _cleanup_temp():
     _temp_files.clear()
 
 
-import atexit
 atexit.register(_cleanup_temp)
 
 # ---------------------------------------------------------------------------
@@ -94,6 +94,37 @@ def detect_aruco(frame_b64):
 
 
 # ---------------------------------------------------------------------------
+#  Char / background helpers
+# ---------------------------------------------------------------------------
+
+def _resolve_char(char_id):
+    """Look up character by id, raise gr.Error with friendly message otherwise."""
+    char = CHARS.get(char_id)
+    if not char:
+        raise gr.Error("Персонаж не найден.")
+    return char
+
+
+def _background_markup(full_style="width:100%;height:100%;object-fit:cover;display:block;"):
+    """Return HTML for aquarium/composite background (video if available, else image)."""
+    if os.path.exists(BACKGROUND_VIDEO_PATH):
+        return (
+            f'<video autoplay muted loop playsinline style="{full_style}">'
+            f'<source src="/gradio_api/file={BACKGROUND_VIDEO_PATH}">'
+            '</video>'
+        )
+    return f'<img src="/gradio_api/file={BACKGROUND_PATH}" style="{full_style}">'
+
+
+def _pick_motion_pattern(char):
+    """Return a random motion pattern dict or None."""
+    motion_patterns = char.get("motion", {})
+    if not motion_patterns:
+        return None
+    return random.choice(list(motion_patterns.values()))
+
+
+# ---------------------------------------------------------------------------
 #  Alignment
 # ---------------------------------------------------------------------------
 
@@ -114,22 +145,19 @@ def align(image, force_char_id=None):
     Иначе — определяется автоматически по BL-маркеру.
     """
     img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-    detector = cv2.aruco.ArucoDetector(
-        cv2.aruco.getPredefinedDictionary(ARUCO_DICT)
-    )
-    corners, ids, _ = detector.detectMarkers(img)
+    corners, ids, _ = _aruco_detector.detectMarkers(img)
     if ids is None or len(ids) < 4:
         raise gr.Error(
             f"На фото найдено "
             f"{0 if ids is None else len(ids)} маркеров из 4. "
             "Покажи в кадре все четыре ArUco-маркера."
         )
-    detected = {}
-    for i, mid in enumerate(ids.flatten()):
-        detected[int(mid)] = corners[i][0].mean(axis=0)
+    detected = {
+        int(mid): corners[i][0].mean(axis=0)
+        for i, mid in enumerate(ids.flatten())
+    }
 
-    found_ids = set(detected.keys())
-    bl_ids = found_ids - set(MARKER_IDS_BASE)
+    bl_ids = set(detected.keys()) - set(MARKER_IDS_BASE)
     if not bl_ids:
         raise gr.Error("Не удалось определить BL-маркер.")
     bl_id = bl_ids.pop()
@@ -159,19 +187,16 @@ def align(image, force_char_id=None):
 
 def compute_image_rect(svg_path):
     """Compute image_rect from SVG dimensions + template geometry."""
-    tree = ET.parse(str(svg_path))
-    root = tree.getroot()
-    svg_w = float(root.get("width"))
-    svg_h = float(root.get("height"))
+    char = SvgCharacter(svg_path)
     inner = MARGIN + MARKER_PX + CONTENT_PAD
     bx, by = inner, inner
     bw, bh = CANVAS_W - 2 * inner, CANVAS_H - 2 * inner
-    scale = min(bw / svg_w, bh / svg_h) * CONTENT_SCALE
-    tw, th = int(svg_w * scale), int(svg_h * scale)
+    scale = min(bw / char.width, bh / char.height) * CONTENT_SCALE
+    tw, th = int(char.width * scale), int(char.height * scale)
     return [bx + (bw - tw) // 2, by + (bh - th) // 2, tw, th]
 
 
-def _correct_photo(aligned_bgr, image_rect, white_target=240, gain_range=(0.9, 1.3)):
+def _correct_photo(aligned_bgr, image_rect):
     """White balance correction using paper margins as reference."""
     ix, iy, iw, ih = image_rect
     inner = MARGIN + MARKER_PX + CONTENT_PAD
@@ -186,94 +211,53 @@ def _correct_photo(aligned_bgr, image_rect, white_target=240, gain_range=(0.9, 1
 
     paper_pixels = np.vstack([s.reshape(-1, 3) for s in strips if s.size > 0])
     paper_ref = np.median(paper_pixels, axis=0)
-    gain = np.clip(white_target / (paper_ref + 1e-6), *gain_range)
+    gain = np.clip(240 / (paper_ref + 1e-6), 0.9, 1.3)
 
     return np.clip(aligned_bgr.astype(np.float32) * gain[np.newaxis, np.newaxis, :], 0, 255).astype(np.uint8)
 
 
-_SVG_COLOR_MAP = {
-    "#00ff00": (0, 255, 0), "#00FF00": (0, 255, 0),
-    "black": (0, 0, 0), "#000000": (0, 0, 0), "#000": (0, 0, 0),
-    "white": (255, 255, 255), "#ffffff": (255, 255, 255), "#FFFFFF": (255, 255, 255),
-}
-
-
-def _svg_parse_paths(svg_path, sx, sy, pts_per_seg=30):
-    """Parse SVG paths into ordered draw operations (painter's algorithm).
-
-    Returns list of (polygon_pts, fill_bgr, stroke_bgr, thickness).
-    """
-    from svgpathtools import parse_path
-
-    tree = ET.parse(str(svg_path))
-    root = tree.getroot()
-    ns = "http://www.w3.org/2000/svg"
-
-    ops = []
-    for path_el in root.iter(f"{{{ns}}}path"):
-        d = (path_el.get("d") or "").strip()
-        if not d:
-            continue
-        fill_bgr = _SVG_COLOR_MAP.get((path_el.get("fill") or "none").strip())
-        stroke_bgr = _SVG_COLOR_MAP.get((path_el.get("stroke") or "none").strip())
-
-        path_obj = parse_path(d)
-        subpaths, current = [], []
-        for seg in path_obj:
-            start = (seg.start.real * sx, seg.start.imag * sy)
-            if current:
-                last = current[-1]
-                if (start[0] - last[0]) ** 2 + (start[1] - last[1]) ** 2 > 4:
-                    if len(current) >= 3:
-                        subpaths.append(np.array(current, dtype=np.int32))
-                    current = []
-            if not current:
-                current.append(start)
-            for i in range(1, pts_per_seg + 1):
-                pt = seg.point(i / pts_per_seg)
-                current.append((pt.real * sx, pt.imag * sy))
-        if len(current) >= 3:
-            subpaths.append(np.array(current, dtype=np.int32))
-
-        for pts in subpaths:
-            ops.append((pts, fill_bgr, stroke_bgr, 1))
-    return ops
-
-
 def _render_svg_polygons(svg_path, tw, th):
-    """Render SVG character using polygons. Returns BGRA numpy array."""
-    tree = ET.parse(str(svg_path))
-    root = tree.getroot()
-    svg_w = float(root.get("width"))
-    svg_h = float(root.get("height"))
-
-    ops = _svg_parse_paths(svg_path, tw / svg_w, th / svg_h)
-    green_bgr = (0, 255, 0)
-
-    result = np.full((th, tw, 3), 255, dtype=np.uint8)
-    alpha = np.zeros((th, tw), dtype=np.uint8)
-
-    for pts, fill_bgr, _, _ in ops:
-        if fill_bgr == green_bgr:
-            cv2.fillPoly(alpha, [pts], 255)
-        elif fill_bgr:
-            cv2.fillPoly(result, [pts], fill_bgr)
-            cv2.fillPoly(alpha, [pts], 255)
-    for pts, _, stroke_bgr, thickness in ops:
-        if stroke_bgr:
-            cv2.polylines(result, [pts], False, stroke_bgr, thickness)
-            cv2.polylines(alpha, [pts], False, 255, thickness)
-
-    return cv2.merge([*cv2.split(result), alpha])
+    """Render SVG character (BGRA) for skeleton/animation preview."""
+    return SvgCharacter(svg_path).render(tw, th, fill_zones="white")
 
 
-def transfer_color_app(aligned_pil, char):
-    """Transfer colors from photo onto SVG character using polygon approach.
+def _fit_alpha_bbox(src_rgba, dst_rgba):
+    """Центрирует и пропорционально масштабирует src_rgba под alpha-bbox dst_rgba.
 
-    SVG paths -> cv2.fillPoly/polylines. Painter's algorithm:
-    1. Green fills -> photo color zone
-    2. Non-green fills -> overlay (eye, pupil, etc.)
-    3. Strokes -> contours on top
+    Используется чтобы выровнять результат сегментации по SVG-контуру —
+    ребёнок мог нарисовать крупнее/смещённо, мы это компенсируем перед анимацией.
+    """
+    def _bbox(rgba):
+        ys, xs = np.where(rgba[..., 3] > 10)
+        if len(xs) == 0:
+            return None
+        return (float(xs.min()), float(ys.min()),
+                float(xs.max() + 1 - xs.min()), float(ys.max() + 1 - ys.min()))
+
+    sb, db = _bbox(src_rgba), _bbox(dst_rgba)
+    if sb is None or db is None:
+        return src_rgba
+
+    sx, sy, sw, sh = sb
+    dx, dy, dw, dh = db
+    scale = min(dw / sw, dh / sh)
+    tx = (dx + dw / 2) - (sx + sw / 2) * scale
+    ty = (dy + dh / 2) - (sy + sh / 2) * scale
+
+    M = np.array([[scale, 0, tx], [0, scale, ty]], dtype=np.float32)
+    h, w = dst_rgba.shape[:2]
+    return cv2.warpAffine(src_rgba, M, (w, h),
+                          flags=cv2.INTER_LANCZOS4,
+                          borderMode=cv2.BORDER_CONSTANT,
+                          borderValue=(0, 0, 0, 0))
+
+
+def digitize_segmentation(aligned_pil, char):
+    """Segmentation-based digitize: crop → rembg → fit to SVG bbox. Returns BGRA.
+
+    1. WB-коррекция фото по полям бумаги
+    2. rembg отделяет персонажа от фона
+    3. fit_alpha_bbox центрирует/масштабирует под SVG — чтобы скелет сел точно
     """
     svg_path = char["svg"]
     image_rect = compute_image_rect(svg_path)
@@ -283,43 +267,33 @@ def transfer_color_app(aligned_pil, char):
     aligned_bgr = _correct_photo(aligned_bgr, image_rect)
     photo_crop = aligned_bgr[iy : iy + ih, ix : ix + iw]
 
-    tree = ET.parse(str(svg_path))
-    root = tree.getroot()
-    svg_w = float(root.get("width"))
-    svg_h = float(root.get("height"))
+    _, img_bytes = cv2.imencode(".png", photo_crop)
+    fg_png = remove(img_bytes.tobytes(), session=_get_rembg_session())
+    fg_raw = cv2.imdecode(np.frombuffer(fg_png, np.uint8), cv2.IMREAD_UNCHANGED)
 
-    ops = _svg_parse_paths(svg_path, iw / svg_w, ih / svg_h)
-    green_bgr = (0, 255, 0)
+    svg_contour = SvgCharacter(svg_path).render(iw, ih, fill_zones="transparent")
+    return _fit_alpha_bbox(fg_raw, svg_contour)
 
-    result = photo_crop.copy()
-    final_alpha = np.zeros((ih, iw), dtype=np.uint8)
 
-    for pts, fill_bgr, _, _ in ops:
-        if fill_bgr == green_bgr:
-            cv2.fillPoly(final_alpha, [pts], 255)
-        elif fill_bgr:
-            cv2.fillPoly(result, [pts], fill_bgr)
-            cv2.fillPoly(final_alpha, [pts], 255)
+_ARAP_PAD = (40, 60, 40, 40)  # top, bottom, left, right — запас для выезда при деформации
 
-    for pts, _, stroke_bgr, thickness in ops:
-        if stroke_bgr:
-            cv2.polylines(result, [pts], False, stroke_bgr, thickness)
-            cv2.polylines(final_alpha, [pts], False, 255, thickness)
 
-    # Закрыть 1px дырки между полигонами (close = dilate + erode)
-    final_alpha = cv2.morphologyEx(final_alpha, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
-
-    rgba = cv2.merge([*cv2.split(result), final_alpha])
-    return {"rgba": rgba, "image_rect": image_rect}
+def _static_frames(rgba, pad=_ARAP_PAD):
+    """Для персонажей без анимации — заполняем такой же список кадров,
+    но все идентичные. Downstream (mp4/apng/композит) работает без изменений.
+    """
+    pt, pb, pl, pr = pad
+    padded = cv2.copyMakeBorder(rgba, pt, pb, pl, pr,
+                                cv2.BORDER_CONSTANT, value=(0, 0, 0, 0))
+    return [padded] * (FPS * DURATION)
 
 
 def _generate_frames(aligned_img, char):
-    ct_result = transfer_color_app(aligned_img, char)
-    rgba = ct_result["rgba"]
-    keypoints = char["skeleton"]["keypoints"]
-    animation_cfg = char["animation"]
-    return _animate_arap(rgba, keypoints, animation_cfg,
-                         fps=FPS, duration=DURATION, pad=(40, 60, 40, 40))
+    rgba = digitize_segmentation(aligned_img, char)
+    if not char.get("animation_ready"):
+        return _static_frames(rgba)
+    return _animate_arap(rgba, char["skeleton"]["keypoints"], char["animation"],
+                         fps=FPS, duration=DURATION, pad=_ARAP_PAD)
 
 
 # ---------------------------------------------------------------------------
@@ -328,7 +302,6 @@ def _generate_frames(aligned_img, char):
 
 def _frames_to_mp4(cv_frames):
     """Encode BGRA frames to H.264 mp4 (white background for transparency)."""
-    import imageio_ffmpeg
     tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
     tmp.close()
     h, w = cv_frames[0].shape[:2]
@@ -381,144 +354,15 @@ def _frames_to_apng(cv_frames, max_h=300):
 
 
 # ---------------------------------------------------------------------------
-#  Composite on background
+#  Swim animation (shared by composite + aquarium)
 # ---------------------------------------------------------------------------
-
-def _composite_html(cached_frames, swim_cfg=None):
-    fish_path = _frames_to_apng(cached_frames)
-    with open(fish_path, "rb") as f:
-        fish_b64 = base64.b64encode(f.read()).decode()
-
-    if swim_cfg is None:
-        swim_cfg = {}
-    direction = swim_cfg.get("direction", 180)
-    flip = swim_cfg.get("flip", False)
-    rot = swim_cfg.get("rotate", 0)
-    swim_dur = swim_cfg.get("swim_duration", 8)
-    bob = swim_cfg.get("bob_range", [40, 55])
-    tilt_amp = swim_cfg.get("tilt", 8)
-    tilt_dur = swim_cfg.get("tilt_duration", 3)
-    offset_pct = swim_cfg.get("offset_x", 0)
-
-    total_dur = swim_dur * 2  # round trip
-
-    # Bounce points (visible, not off-screen)
-    dir_rad = np.radians(direction)
-    cos_d, sin_d = np.cos(dir_rad), np.sin(dir_rad)
-    span = 35
-    ax = 50 - cos_d * span + offset_pct
-    ay = 50 + sin_d * span
-    bx = 50 + cos_d * span + offset_pct
-    by = 50 - sin_d * span
-    bob_amp = (bob[1] - bob[0]) / 2
-
-    # Forward / return orientation
-    sx_fwd = -1 if flip else 1
-    sx_ret = -sx_fwd
-
-    # Bake round-trip path + bob + tilt + turn into one keyframe
-    turn = 0.025  # 2.5% of animation for turn (~0.4s)
-    fwd_end = 0.5 - turn
-    ret_start = 0.5 + turn
-    n_steps = 80
-    kf_lines = []
-    for i in range(n_steps + 1):
-        t = i / n_steps
-        if t <= fwd_end:
-            frac = t / fwd_end
-            lv = ax + (bx - ax) * frac
-            tv = ay + (by - ay) * frac
-            phase = frac * swim_dur / tilt_dur
-            tv += bob_amp * np.sin(2 * np.pi * phase)
-            tilt_v = tilt_amp * np.sin(2 * np.pi * phase)
-            r = -rot - tilt_v
-            sx = sx_fwd
-        elif t <= 0.5:
-            lv, tv = bx, by
-            squeeze = 1 - (t - fwd_end) / turn
-            r = -rot
-            sx = sx_fwd * squeeze
-        elif t <= ret_start:
-            lv, tv = bx, by
-            expand = (t - 0.5) / turn
-            r = rot
-            sx = sx_ret * expand
-        else:
-            frac = (t - ret_start) / (1 - ret_start)
-            lv = bx + (ax - bx) * frac
-            tv = by + (ay - by) * frac
-            phase = frac * swim_dur / tilt_dur
-            tv += bob_amp * np.sin(2 * np.pi * phase)
-            tilt_v = tilt_amp * np.sin(2 * np.pi * phase)
-            r = rot - tilt_v
-            sx = sx_ret
-        tf = f"translate(-50%,-50%) rotate({r:.1f}deg) scaleX({sx:.3f})"
-        kf_lines.append(f"    {t*100:.1f}%{{left:{lv:.1f}%;top:{tv:.1f}%;transform:{tf};}}")
-    swim_css = "\n".join(kf_lines)
-
-    background_markup = ""
-    if os.path.exists(BACKGROUND_VIDEO_PATH):
-        background_markup = (
-            '<video autoplay muted loop playsinline'
-            ' style="width:100%;height:100%;object-fit:cover;display:block;">'
-            f'<source src="/gradio_api/file={BACKGROUND_VIDEO_PATH}">'
-            '</video>')
-    else:
-        background_markup = (
-            f'<img src="/gradio_api/file={BACKGROUND_PATH}"'
-            ' style="width:100%;height:100%;object-fit:cover;display:block;">')
-
-    html = f"""\
-<div style="position:relative;width:100%;aspect-ratio:16/9;overflow:hidden;border-radius:12px;cursor:pointer;"
-     id="ocean">
-  {background_markup}
-  <img id="fish"
-       src="data:image/png;base64,{fish_b64}"
-       style="position:absolute;height:35%;
-              animation:swim {total_dur}s linear infinite;">
-</div>
-<style>
-  @keyframes swim {{
-{swim_css}
-  }}
-</style>
-<script>
-(function() {{
-  var fish = document.getElementById('fish');
-  if (!fish) return;
-  var speed = 1, target = 1, rafId = 0;
-  function loop() {{
-    speed += (target - speed) * 0.002;
-    fish.style.animationDuration = ({total_dur}/speed)+'s';
-    if (Math.abs(speed - target) > 0.001) {{
-      rafId = requestAnimationFrame(loop);
-    }}
-  }}
-  document.getElementById('ocean').addEventListener('click', function() {{
-    target = 1.8;
-    setTimeout(function() {{ target = 1; cancelAnimationFrame(rafId); loop(); }}, 3000);
-    cancelAnimationFrame(rafId);
-    loop();
-  }});
-}})();
-</script>"""
-    return html
-
-
-# ---------------------------------------------------------------------------
-#  Aquarium
-# ---------------------------------------------------------------------------
-
-AQUARIUM_EMPTY = (
-    '<div style="min-height:300px;display:flex;align-items:center;'
-    'justify-content:center;color:#9ca3af;border:1px dashed #d1d5db;'
-    'border-radius:12px;background:#f8fafc;">'
-    '<span style="font-size:18px;">Аквариум пуст — добавь персонажа</span></div>'
-)
-
 
 def _swim_keyframes(swim_cfg, name="swim", offset_y=0):
-    """Generate CSS @keyframes + total_dur for one fish."""
+    """Generate CSS @keyframes + total_dur for one fish path.
+
+    Bakes round-trip path + bob + tilt + turn into a single named @keyframes.
+    Used for both single-fish composite and multi-fish aquarium.
+    """
     cfg = swim_cfg or {}
     direction = cfg.get("direction", 180)
     flip = cfg.get("flip", False)
@@ -526,10 +370,10 @@ def _swim_keyframes(swim_cfg, name="swim", offset_y=0):
     swim_dur = cfg.get("swim_duration", 8)
     bob = cfg.get("bob_range", [40, 55])
     tilt_amp = cfg.get("tilt", 8)
-    tilt_dur = cfg.get("tilt_duration", 3)
+    tilt_dur = cfg.get("tilt_duration", 3) or 3  # guard against 0 / None
     offset_pct = cfg.get("offset_x", 0)
 
-    total_dur = swim_dur * 2
+    total_dur = swim_dur * 2  # round trip
     dir_rad = np.radians(direction)
     cos_d, sin_d = np.cos(dir_rad), np.sin(dir_rad)
     span = 35
@@ -538,10 +382,9 @@ def _swim_keyframes(swim_cfg, name="swim", offset_y=0):
     bx = 50 + cos_d * span + offset_pct
     by = 50 - sin_d * span + offset_y
     bob_amp = (bob[1] - bob[0]) / 2 if isinstance(bob, (list, tuple)) and len(bob) >= 2 else 5
-    tilt_dur = tilt_dur or 3  # guard against 0 / None
     sx_fwd = -1 if flip else 1
     sx_ret = -sx_fwd
-    turn = 0.025
+    turn = 0.025  # 2.5% of animation for turn (~0.4s)
     fwd_end = 0.5 - turn
     ret_start = 0.5 + turn
 
@@ -571,20 +414,53 @@ def _swim_keyframes(swim_cfg, name="swim", offset_y=0):
             tv += bob_amp * np.sin(2 * np.pi * phase)
             tilt_v = tilt_amp * np.sin(2 * np.pi * phase)
             r, sx = rot - tilt_v, sx_ret
-        # Guard against NaN from bad config values
         if np.isnan(lv) or np.isnan(tv) or np.isnan(r) or np.isnan(sx):
-            print(f"[WARN] NaN at step {i}/{n_steps} in {name}: "
-                  f"lv={lv}, tv={tv}, r={r}, sx={sx}, cfg={cfg}")
-            lv = np.nan_to_num(lv, nan=50.0)
-            tv = np.nan_to_num(tv, nan=50.0)
-            r = np.nan_to_num(r, nan=0.0)
-            sx = np.nan_to_num(sx, nan=1.0)
+            lv = float(np.nan_to_num(lv, nan=50.0))
+            tv = float(np.nan_to_num(tv, nan=50.0))
+            r = float(np.nan_to_num(r, nan=0.0))
+            sx = float(np.nan_to_num(sx, nan=1.0))
         tf = f"translate(-50%,-50%) rotate({r:.1f}deg) scaleX({sx:.3f})"
         kf_lines.append(
-            f"{t*100:.1f}% {{ left:{lv:.1f}%; top:{tv:.1f}%; transform:{tf}; }}")
+            f"  {t*100:.1f}% {{ left:{lv:.1f}%; top:{tv:.1f}%; transform:{tf}; }}")
 
     css = f"@keyframes {name} {{\n" + "\n".join(kf_lines) + "\n}"
     return css, total_dur
+
+
+# ---------------------------------------------------------------------------
+#  Composite on background (single fish)
+# ---------------------------------------------------------------------------
+
+def _composite_html(cached_frames, swim_cfg=None):
+    """Render single-fish composite HTML with background + swim animation."""
+    fish_path = _frames_to_apng(cached_frames)
+    with open(fish_path, "rb") as f:
+        fish_b64 = base64.b64encode(f.read()).decode()
+
+    swim_css, total_dur = _swim_keyframes(swim_cfg or {}, name="swim")
+
+    return f"""\
+<div style="position:relative;width:100%;aspect-ratio:16/9;overflow:hidden;border-radius:12px;">
+  {_background_markup()}
+  <img src="data:image/png;base64,{fish_b64}"
+       style="position:absolute;height:35%;
+              animation:swim {total_dur}s linear infinite;">
+</div>
+<style>
+{swim_css}
+</style>"""
+
+
+# ---------------------------------------------------------------------------
+#  Aquarium (multi-fish)
+# ---------------------------------------------------------------------------
+
+AQUARIUM_EMPTY = (
+    '<div style="min-height:300px;display:flex;align-items:center;'
+    'justify-content:center;color:#9ca3af;border:1px dashed #d1d5db;'
+    'border-radius:12px;background:#f8fafc;">'
+    '<span style="font-size:18px;">Аквариум пуст — добавь персонажа</span></div>'
+)
 
 
 def _aquarium_html(fish_list):
@@ -595,18 +471,7 @@ def _aquarium_html(fish_list):
     # Unique prefix to avoid stale CSS keyframe collisions across updates
     uid = int(time.time() * 1000) % 1_000_000
 
-    bg_path = BACKGROUND_VIDEO_PATH if os.path.exists(BACKGROUND_VIDEO_PATH) else BACKGROUND_PATH
-    if os.path.exists(BACKGROUND_VIDEO_PATH):
-        bg = (
-            '<video autoplay muted loop playsinline'
-            ' style="width:100%;height:100%;object-fit:cover;display:block;">'
-            f'<source src="/gradio_api/file={BACKGROUND_VIDEO_PATH}">'
-            '</video>')
-    else:
-        bg = (
-            f'<img src="/gradio_api/file={BACKGROUND_PATH}"'
-            ' style="width:100%;height:100%;object-fit:cover;display:block;">')
-
+    bg = _background_markup()
     imgs = []
     styles = []
     for idx, fish in enumerate(fish_list):
@@ -622,7 +487,6 @@ def _aquarium_html(fish_list):
             f'<img src="/gradio_api/file={apng_path}"'
             f' style="position:absolute;height:{size}%;z-index:{idx + 1};'
             f'animation:{kf_name} {total_dur}s linear infinite -{delay:.1f}s;">')
-        print(f"[aquarium] fish #{idx}: {kf_name} dur={total_dur}s delay=-{delay}s")
 
     all_css = "\n".join(styles)
 
@@ -666,16 +530,16 @@ def add_to_aquarium(last_fish, aquarium_state):
     total_dur = swim_cfg.get("swim_duration", 8) * 2
     # Fixed vertical offsets to guarantee separation
     y_slots = [-20, 15, -8, 22, -15]
+    size_slots = [30, 28, 33, 25, 35]
     idx = len(aquarium_state)
     fish = {
         "apng_path": last_fish["apng_path"],
         "swim_cfg": swim_cfg,
         "delay": round(total_dur * (idx * 0.3 % 1), 1),
-        "size": [30, 28, 33, 25, 35][idx % 5],
+        "size": size_slots[idx % 5],
         "offset_y": y_slots[idx % 5],
     }
     aquarium_state.append(fish)
-    print(f"[aquarium] adding fish #{idx+1}: swim_cfg={swim_cfg}")
     display, btn = _aquarium_html(aquarium_state)
     return aquarium_state, display, btn
 
@@ -697,9 +561,7 @@ def auto_process(photo, force_char_id=None):
     aligned, char_id = align(photo, force_char_id=force_char_id)
     char = CHARS[char_id]
     frames = _generate_frames(aligned, char)
-    motion_patterns = char.get("motion", {})
-    pattern = random.choice(list(motion_patterns.values())) if motion_patterns else None
-    html = _composite_html(frames, pattern)
+    html = _composite_html(frames, _pick_motion_pattern(char))
 
     # APNG with transparency for animation preview + aquarium
     apng_path = _frames_to_apng(frames, max_h=400)
@@ -710,7 +572,7 @@ def auto_process(photo, force_char_id=None):
         f'</div>'
     )
 
-    all_patterns = list(motion_patterns.values()) if motion_patterns else [{}]
+    all_patterns = list(char.get("motion", {}).values()) or [{}]
     fish_data = {"apng_path": apng_path, "patterns": all_patterns}
 
     return anim_html, html, fish_data, char_id
@@ -727,13 +589,16 @@ def _render_qr_html(char_id=None):
 
 
 def _render_preview_with_skeleton(char):
-    """Render SVG with skeleton keypoints overlay -> PIL Image."""
+    """Render SVG with skeleton keypoints overlay -> PIL Image.
+
+    Для персонажей без skeleton показываем просто SVG без точек.
+    """
     svg_path = char["svg"]
-    image_rect = compute_image_rect(svg_path)
-    _, _, tw, th = image_rect
+    _, _, tw, th = compute_image_rect(svg_path)
 
     img = _render_svg_polygons(svg_path, tw, th)
-    for name, (nx, ny) in char["skeleton"]["keypoints"].items():
+    keypoints = char.get("skeleton", {}).get("keypoints", {})
+    for name, (nx, ny) in keypoints.items():
         x, y = int(nx * tw), int(ny * th)
         cv2.circle(img, (x, y), 5, (0, 0, 255, 255), -1)
         cv2.circle(img, (x, y), 5, (255, 255, 255, 255), 2)
@@ -743,25 +608,24 @@ def _render_preview_with_skeleton(char):
 
 
 def _generate_animation_preview(char):
-    """Generate animation from original SVG (no photo) -> mp4 path."""
+    """Preview video from original SVG (no photo) -> mp4 path.
+
+    Для персонажей без анимации — статичное видео (SVG-персонаж в покое).
+    """
     svg_path = char["svg"]
-    image_rect = compute_image_rect(svg_path)
-    _, _, tw, th = image_rect
+    _, _, tw, th = compute_image_rect(svg_path)
     img_bgra = _render_svg_polygons(svg_path, tw, th)
-    keypoints = char["skeleton"]["keypoints"]
-    animation_cfg = char["animation"]
-    frames = _animate_arap(img_bgra, keypoints, animation_cfg,
-                           fps=FPS, duration=DURATION, pad=(40, 60, 40, 40))
+    if char.get("animation_ready"):
+        frames = _animate_arap(img_bgra, char["skeleton"]["keypoints"], char["animation"],
+                               fps=FPS, duration=DURATION, pad=_ARAP_PAD)
+    else:
+        frames = _static_frames(img_bgra)
     return _frames_to_mp4(frames)
 
 
 def _on_auto_char_change(char_id):
-    if not char_id:
-        return None, None
-    char = CHARS.get(char_id)
-    if not char:
-        return None, None
-    template = char.get("template")
+    char = CHARS.get(char_id) if char_id else None
+    template = char.get("template") if char else None
     return template, template
 
 
@@ -778,35 +642,21 @@ def _on_step_char_change(char_id):
 def do_color_transfer(aligned_img, char_id):
     if aligned_img is None:
         raise gr.Error("Сначала загрузи и выровняй фото рисунка.")
-    char = CHARS.get(char_id)
-    if not char:
-        raise gr.Error("Персонаж не найден.")
-    ct_result = transfer_color_app(aligned_img, char)
-    rgba = ct_result["rgba"]
+    rgba = digitize_segmentation(aligned_img, _resolve_char(char_id))
     return Image.fromarray(cv2.cvtColor(rgba, cv2.COLOR_BGRA2RGBA))
 
 
 def do_animation(aligned_img, char_id):
     if aligned_img is None:
         raise gr.Error("Сначала загрузи и выровняй фото рисунка.")
-    char = CHARS.get(char_id)
-    if not char:
-        raise gr.Error("Персонаж не найден.")
-    frames = _generate_frames(aligned_img, char)
-    mp4_path = _frames_to_mp4(frames)
-    return mp4_path, frames
+    frames = _generate_frames(aligned_img, _resolve_char(char_id))
+    return _frames_to_mp4(frames), frames
 
 
 def do_composite(cached_frames, char_id=None):
     if not cached_frames:
         raise gr.Error("Сначала собери анимацию.")
-    pattern = None
-    if char_id:
-        char = CHARS.get(char_id)
-        if char:
-            motion_patterns = char.get("motion", {})
-            if motion_patterns:
-                pattern = random.choice(list(motion_patterns.values()))
+    pattern = _pick_motion_pattern(CHARS[char_id]) if char_id and char_id in CHARS else None
     html = _composite_html(cached_frames, pattern)
     tmp = tempfile.NamedTemporaryFile(
         suffix=".html", delete=False, mode="w", encoding="utf-8",

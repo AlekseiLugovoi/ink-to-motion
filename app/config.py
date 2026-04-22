@@ -7,13 +7,10 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 APP_DIR = Path(__file__).resolve().parent
-REPO_DIR = APP_DIR.parent
 ASSETS_DIR = APP_DIR / "assets"
 TEMPLATES_DIR = (ASSETS_DIR / "templates").resolve()
 BACKGROUND_PATH = str((TEMPLATES_DIR / "background.jpg").resolve())
-_bg_video_assets = TEMPLATES_DIR / "background.mov"
-_bg_video_preproc = REPO_DIR / "pipeline" / "templates" / "background.mov"
-BACKGROUND_VIDEO_PATH = str(_bg_video_assets.resolve()) if _bg_video_assets.exists() else str(_bg_video_preproc.resolve())
+BACKGROUND_VIDEO_PATH = str((TEMPLATES_DIR / "background.mov").resolve())
 
 # ---------------------------------------------------------------------------
 #  Template geometry (A4 @ 150 DPI)
@@ -23,7 +20,6 @@ BACKGROUND_VIDEO_PATH = str(_bg_video_assets.resolve()) if _bg_video_assets.exis
 ARUCO_DICT = cv2.aruco.DICT_4X4_50
 # TL, TR, BR stay fixed; BL encodes character (3 → 001, 4 → 002, 5 → 003, …)
 MARKER_IDS_BASE = [0, 1, 2]  # TL, TR, BR — shared by all characters
-MARKER_IDS = [0, 1, 2, 3]   # default (char 001), overridden per character
 CANVAS_H, CANVAS_W = 1240, 1754
 MARKER_PX, MARGIN, CONTENT_PAD = 80, 60, 10
 CONTENT_SCALE = 0.8
@@ -78,27 +74,37 @@ for _char_dir in sorted(TEMPLATES_DIR.iterdir()):
     if not _char_dir.is_dir():
         continue
     _char_id = _char_dir.name
-    _required = ["mask.svg", "skeleton.json", "animation.json"]
-    if all((_char_dir / f).exists() for f in _required):
+    # Минимум для регистрации — SVG-маска. skeleton/animation опциональны (004 без них).
+    if not (_char_dir / "mask.svg").exists():
+        continue
+
+    _animation_ready = (
+        (_char_dir / "skeleton.json").exists()
+        and (_char_dir / "animation.json").exists()
+    )
+    _skel = {"keypoints": {}}
+    _anim = {}
+    if _animation_ready:
         with open(_char_dir / "skeleton.json", encoding="utf-8") as _f:
             _skel = json.load(_f)
         with open(_char_dir / "animation.json", encoding="utf-8") as _f:
             _anim = json.load(_f)
-        _motion_raw = {}
-        if (_char_dir / "motion.json").exists():
-            with open(_char_dir / "motion.json", encoding="utf-8") as _f:
-                _motion_raw = json.load(_f)
-        _motion = _parse_motion(_motion_raw)
-        _marker_ids = MARKER_IDS_BASE + [_next_bl_id]
-        CHARS[_char_id] = {
-            "svg": str((_char_dir / "mask.svg").resolve()),
-            "skeleton": _skel,
-            "animation": _anim,
-            "motion": _motion,
-            "template": str((_char_dir / "template.png").resolve()) if (_char_dir / "template.png").exists() else None,
-            "marker_ids": _marker_ids,
-        }
-        _next_bl_id += 1
+    _motion_raw = {}
+    if (_char_dir / "motion.json").exists():
+        with open(_char_dir / "motion.json", encoding="utf-8") as _f:
+            _motion_raw = json.load(_f)
+    _motion = _parse_motion(_motion_raw)
+    _marker_ids = MARKER_IDS_BASE + [_next_bl_id]
+    CHARS[_char_id] = {
+        "svg": str((_char_dir / "mask.svg").resolve()),
+        "skeleton": _skel,
+        "animation": _anim,
+        "motion": _motion,
+        "template": str((_char_dir / "template.png").resolve()) if (_char_dir / "template.png").exists() else None,
+        "marker_ids": _marker_ids,
+        "animation_ready": _animation_ready,
+    }
+    _next_bl_id += 1
 
 DEFAULT_CHAR = list(CHARS.keys())[0] if CHARS else None
 

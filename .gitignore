@@ -1,6 +1,8 @@
 # dev files
-test_*
-output_*
+dev/pipeline/output
+dev/pipeline/input
+dev/rnd/input
+dev/rnd/output
 
 # secrets
 .streamlit/secrets.toml

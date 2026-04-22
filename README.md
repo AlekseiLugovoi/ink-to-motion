@@ -8,8 +8,8 @@ DEMO: https://ink-to-motion-production.up.railway.app
 | Папка | Назначение |
 |---|---|
 | `app/` | Продакшн — Gradio-приложение |
-| `pipeline/` | Рабочий пайплайн: ноутбуки + `utils.py` (шаблоны, выравнивание, цвет, анимация) |
-| `rnd/` | R&D — исследование подходов (каждый ноутбук = одна тема) |
+| `dev/pipeline/` | Рабочий пайплайн: ноутбуки по шагам + `utils.py` |
+| `dev/rnd/` | R&D — исследование подходов (каждый ноутбук = одна тема) |
 
 ## Требования к железу (app)
 
@@ -29,14 +29,8 @@ DEMO: https://ink-to-motion-production.up.railway.app
 ### 0. Подготовка шаблона
 
 Всё строится от одного SVG-файла персонажа. Из него:
-- генерируется шаблон для печати (A4 с ArUco-маркерами)
-- извлекаются полигоны для переноса цвета (`cv2.fillPoly`)
-- берутся контуры для анимации
-
-| SVG (mask.svg) | Шаблон для печати |
-|---|---|
-| <img src="pipeline/templates/001/mask.svg" width="300"> | <img src="pipeline/templates/001/template.png" width="300"> |
-
+- генерируется шаблон для печати (A4 с ArUco-маркерами и меткой CHAR_ID)
+- берутся контуры + зоны для оцифровки и анимации
 
 ### 1. Выравнивание + определение персонажа
 
@@ -51,48 +45,51 @@ DEMO: https://ink-to-motion-production.up.railway.app
 
 > Лимит словаря `DICT_4X4_50` — 47 персонажей (50 − 3 общих маркера). Для большего числа — переключить на `DICT_4X4_100`/`DICT_4X4_250` в `app/config.py`.
 
-| Фото | Выровненное |
-|---|---|
-| <img src="pipeline/output/001_photo_v2_rotated.jpg" width="300"> | <img src="pipeline/output/001_photo_v2_aligned.jpg" width="300"> |
-
 ### 1.1. Коррекция цвета
 
 - Медиана цвета бумаги (поля вокруг персонажа) → поканальный gain до целевой белизны
 - Компенсирует неравномерное освещение и цветовой сдвиг при съёмке
 
-### 2. Перенос цвета
+### 2. Оцифровка персонажа
+
+**Актуальный подход — сегментация + выравнивание:**
+1. Crop зоны персонажа по image_rect (ArUco-маркеры и декор за пределами → не мешают модели)
+2. `rembg/birefnet-general` → маска персонажа (отделяет от бумаги, держит цветные фоны)
+3. `fit_alpha_bbox` → пропорционально масштабируем и центрируем под bbox SVG, чтобы скелет сел на место
+
+<details>
+<summary>Старый подход — color transfer по SVG-маске (deprecated)</summary>
 
 SVG path'ы → полигоны → painter's algorithm:
 1. `#00FF00` (зелёный) fill → зона заливки цветом с фото (`cv2.fillPoly`)
 2. `#FFFFFF` / `#000000` fill → поверх (глаз, зрачок)
 3. Stroke → контуры поверх всего (`cv2.polylines`)
 
+</details>
+
 ### 3. Анимация (mesh-деформация)
 
 - Delaunay-триангуляция по ключевым точкам скелета
 - Движение точек по синусоиде (амплитуда, частота, фаза из `motion.json`)
 - Per-triangle affine warp, работает на CPU
-
-| Триангуляция | Анимация |
-|---|---|
-| <img src="pipeline/output/img05_triangulation.png" width="250"> | <img src="pipeline/output/img05_anim.gif" width="250"> |
+- Персонажи без `skeleton.json`/`animation.json` — статичный кадр (появляются на сцене, но не деформируются)
 
 ### 4. Наложение на фон
 
-- Анимация кодируется в VP9 WebM с альфа-каналом
+- Анимация кодируется в APNG с альфа-каналом
 - Персонаж накладывается на видео-фон (CSS-анимация: плавание, покачивание)
-- Результат — интерактивный HTML (клик ускоряет персонажа)
-
-## Похожие проекты
-
-- [AnimatedDrawings](https://github.com/facebookresearch/AnimatedDrawings) (Meta) — полный пайплайн от рисунка до анимации
-- [Lester](https://github.com/rtous/lester-code) — анимация детских рисунков
-- [Monster Mash](https://github.com/google/monster-mash) (Google) — скетч → 3D модель → анимация в браузере
+- Результат — HTML со встроенным персонажем
 
 ---
 
 <details>
 <summary>R&D: исследованные подходы</summary>
+
+### Похожие проекты
+
+- [AnimatedDrawings](https://github.com/facebookresearch/AnimatedDrawings) (Meta) — полный пайплайн от рисунка до анимации
+- [Lester](https://github.com/rtous/lester-code) — анимация детских рисунков
+- [Monster Mash](https://github.com/google/monster-mash) (Google) — скетч → 3D модель → анимация в браузере
 
 ### Инфраструктура
 

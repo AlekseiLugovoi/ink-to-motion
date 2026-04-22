@@ -1,8 +1,10 @@
 gradio
 rembg[cpu]
 pillow
+pillow-heif
 opencv-python-headless
 numpy
 scipy
 imageio-ffmpeg
-svgpathtools
+svgelements
+resvg-py
